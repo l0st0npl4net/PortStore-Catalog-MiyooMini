@@ -159,6 +159,13 @@ A port gets in with a recipe in a pull request, checked automatically: see
 - Every port's author, whose releases Port Store installs, and
   [OnionOS](https://github.com/OnionUI/Onion).
 
+## License
+
+Port Store and its recipes are under the [MIT License](LICENSE). The ports it installs keep
+their authors' own licenses: Port Store does not host them, the Mini downloads each from its
+author's release. The font, certificates and Rust crates it ships with have their own licenses,
+in `App/PortStore/licenses`.
+
 ---
 
 ## How it works
