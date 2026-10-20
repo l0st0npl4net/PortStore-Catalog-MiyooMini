@@ -34,5 +34,8 @@
     "mr-finster"
   ],
   "about": "Native N64 port built from the Perfect Dark decompilation. No emulation: runs on the Mini's CPU with a software renderer. Save states (9 slots + auto save). First start takes about a minute.",
-  "url": "https://github.com/mr-finster/miyoo64/tree/main/perfect-dark"
+  "url": "https://github.com/mr-finster/miyoo64/tree/main/perfect-dark",
+  "skip": [
+    "App/PerfectDark/config.json"
+  ]
 }

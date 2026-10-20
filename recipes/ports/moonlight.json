@@ -1,0 +1,8 @@
+{
+  "id": "moonlight",
+  "catalog": "Moonlight",
+  "github": "XK9274/moonlight-app-miyoo",
+  "asset": "^Moonlight_Miyoo_[\\d.]+\\.tar\\.gz$",
+  "strip": "",
+  "into": "App/"
+}

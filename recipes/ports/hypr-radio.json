@@ -1,0 +1,6 @@
+{
+  "id": "hypr-radio",
+  "catalog": "HYPR Radio",
+  "github": "zoitrok/hypr-miyoo",
+  "asset": "^hypr-demoscene-radio-v[\\d.]+\\.zip$"
+}

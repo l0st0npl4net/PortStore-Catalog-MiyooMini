@@ -1,0 +1,13 @@
+{
+  "id": "portstore",
+  "name": "Port Store",
+  "github": "l0st0npl4net/PortStore-Catalog-MiyooMini",
+  "asset": "^PortStore-[\\d.]+\\.zip$",
+  "take": ["App/PortStore/"],
+  "keep": ["App/PortStore/settings.json"],
+  "categories": ["app"],
+  "status": "playable",
+  "assets": "free",
+  "porter": ["l0st0npl4net"],
+  "about": "This app: installs and updates ports from their authors' own releases. After an update, close Port Store and start it again."
+}

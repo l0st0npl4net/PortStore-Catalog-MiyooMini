@@ -137,6 +137,26 @@ def kind_of(name):
     return None
 
 
+def tar_name(name):
+    """A tar member's name as the device reads it: without leading "./"."""
+    while name.startswith("./"):
+        name = name[2:]
+    return "" if name == "." else name
+
+
+def sniff(path):
+    """The archive's kind by its first bytes: names lie (a ".tar.gz" that is a tar)."""
+    with open(path, "rb") as f:
+        head = f.read(512)
+    if head.startswith(b"PK\x03\x04") or head.startswith(b"PK\x05\x06"):
+        return "zip"
+    if head.startswith(b"\x1f\x8b"):
+        return "tar.gz"
+    if head[257:262] == b"ustar":
+        return "tar"
+    return None
+
+
 def entries(path, kind):
     """(name, size, is_dir, is_link) of every member."""
     if kind == "zip":
@@ -147,8 +167,9 @@ def entries(path, kind):
                 out.append((dos_name(i), i.file_size, i.is_dir() or i.filename.endswith("\\"), link))
             return out
     with tarfile.open(path, "r:gz" if kind == "tar.gz" else "r:") as t:
-        return [(m.name + ("/" if m.isdir() else ""), m.size, m.isdir(), m.issym() or m.islnk())
-                for m in t.getmembers() if m.isfile() or m.isdir() or m.issym() or m.islnk()]
+        return [(tar_name(m.name) + ("/" if m.isdir() else ""), m.size, m.isdir(), m.issym() or m.islnk())
+                for m in t.getmembers()
+                if (m.isfile() or m.isdir() or m.issym() or m.islnk()) and tar_name(m.name)]
 
 
 def dos_name(info):
@@ -162,18 +183,19 @@ def read_member(path, kind, name):
         with zipfile.ZipFile(path) as z:
             return z.read(next(i for i in z.infolist() if dos_name(i) == name))
     with tarfile.open(path, "r:gz" if kind == "tar.gz" else "r:") as t:
-        f = t.extractfile(name)
+        member = next(m for m in t.getmembers() if tar_name(m.name) == name)
+        f = t.extractfile(member)
         return f.read() if f else b""
 
 
-def shortcut_checks(path, kind, strip, files):
+def shortcut_checks(path, kind, origin, files):
     """The game files Onion's ~Import ports looks for (GameDir, GameDataFile in each
     .port shortcut) that the release does not bring: the user's to put in place."""
     out = []
     for f in files:
         if not (f.startswith("Roms/PORTS/Shortcuts/") and f.endswith((".port", ".notfound"))):
             continue
-        text = read_member(path, kind, strip + f).decode("utf-8", "replace")
+        text = read_member(path, kind, origin[f]).decode("utf-8", "replace")
         field = lambda key: (re.findall(rf'^\s*{key}="([^"]*)"', text, re.M) or [""])[0]
         game_dir = field("GameDir") or field("RomDir")
         data = field("GameDataFile") or field("GameExecutable") or field("RomFile")
@@ -217,41 +239,56 @@ def wrapper(names):
     return ""
 
 
+def target(recipe, rel):
+    """Where a member (its path past `strip`) goes on the card, if anywhere: into one
+    folder (`into`), by the first matching [from, to] of `map`, or as it is when
+    under `take`. The device does the same (install.rs, target)."""
+    if recipe.get("into"):
+        return recipe["into"] + rel
+    if recipe.get("map"):
+        return next((to + rel[len(src):] for src, to in recipe["map"] if rel.startswith(src)), None)
+    return rel if any(rel.startswith(t) for t in recipe.get("take", DEFAULT_TAKE)) else None
+
+
 def plan(members, recipe):
-    """What of the archive goes onto the card: stripped prefix, files, bytes, skipped."""
+    """What of the archive goes onto the card: stripped prefix, files (card paths),
+    bytes, what is left out, and each file's member name."""
     names = [m[0] for m in members]
     strip = recipe.get("strip", wrapper(names))
     take = recipe.get("take", DEFAULT_TAKE)
-    into = recipe.get("into", "")
+    skip = recipe.get("skip", [])
     files, size, skipped = [], 0, set()
+    origin = {}
     for name, length, is_dir, link in members:
         if not name.startswith(strip) or is_dir:
             continue
         rel = name[len(strip):]
-        if into or any(rel.startswith(t) for t in take):
+        to = target(recipe, rel)
+        if to is not None and not any(to.startswith(k) for k in skip):
             # Only what goes onto the card has to be safe.
             if not safe(name):
                 raise ValueError(f"unsafe path in archive: {name}")
             if link:
                 raise ValueError(f"link in archive: {name}")
-            files.append(into + rel)
+            files.append(to)
+            origin[to] = name
             size += length
         else:
             parts = rel.split("/")
             skipped.add("/".join(parts[:2]) + ("/" if len(parts) > 2 else ""))
     if not files:
         raise ValueError(f"nothing under {take} (top: {sorted(skipped)[:6]})")
-    return strip, files, size, sorted(skipped)
+    return strip, files, size, sorted(skipped), origin
 
 
 def roots(files):
-    """The folders the port owns, App/<Name>/ and Roms/PORTS/Games/<Name>/: how the
+    """The folders the port owns, App/<Name>/ (Emu/, RApp/) and Roms/PORTS/Games/<Name>/: how the
     device tells a port put on the card by hand."""
     out = set()
     for f in files:
         p = f.split("/")
-        if p[0] == "App" and len(p) > 2:
-            out.add(f"App/{p[1]}/")
+        if p[0] in ("App", "Emu", "RApp") and len(p) > 2:
+            out.add(f"{p[0]}/{p[1]}/")
         elif p[:3] == ["Roms", "PORTS", "Games"] and len(p) > 4:
             out.add("/".join(p[:4]) + "/")
     return sorted(out)
@@ -297,14 +334,14 @@ META = ("name", "categories", "status", "assets", "porter", "notes", "image", "u
 SIZES = {"thumb": (48, 48), "cover": (224, 168)}
 
 
-def archive_image(path, kind, strip, files):
+def archive_image(path, kind, origin, files):
     """The picture the release brings: Onion's for Games > Ports (Roms/PORTS/Imgs),
     else an app's icon."""
     for prefix in ("Roms/PORTS/Imgs/", "App/"):
         found = sorted(f for f in files if f.startswith(prefix) and f.lower().endswith(".png")
                        and (prefix != "App/" or f.lower().endswith("/icon.png")))
         if found:
-            return read_member(path, kind, strip + found[0])
+            return read_member(path, kind, origin[found[0]])
     return None
 
 
@@ -363,15 +400,15 @@ def entry(recipe, catalog, gh, cache, site):
     rel, asset = pick_release(gh.releases(recipe["github"]), recipe)
     if not asset:
         raise ValueError("no release with a matching file")
-    kind = kind_of(asset["name"])
-    if not kind:
+    if not kind_of(asset["name"]):
         raise ValueError(f"cannot unpack {asset['name']}")
     path = download(asset["browser_download_url"], asset["size"], cache)
+    kind = sniff(path) or kind_of(asset["name"])
     digest = sha256(path)
     if asset.get("digest", "sha256:" + digest) != "sha256:" + digest:
         raise ValueError(f"downloaded file does not match GitHub's digest {asset['digest']}")
-    strip, files, size, skipped = plan(entries(path, kind), recipe)
-    needs = needs_of(recipe, shortcut_checks(path, kind, strip, files))
+    strip, files, size, skipped, origin = plan(entries(path, kind), recipe)
+    needs = needs_of(recipe, shortcut_checks(path, kind, origin, files))
     out = {
         "id": recipe["id"],
         **{k: meta[k] for k in META + ("group", "about") if meta.get(k) not in (None, "", [])},
@@ -386,7 +423,7 @@ def entry(recipe, catalog, gh, cache, site):
         },
         "strip": strip,
         "take": recipe.get("take", DEFAULT_TAKE),
-        **({"into": recipe["into"]} if recipe.get("into") else {}),
+        **{k: recipe[k] for k in ("into", "map", "skip", "shortcut") if recipe.get(k)},
         "keep": recipe.get("keep", []),
         "needs": needs,
         "install": {"files": len(files), "bytes": size, "roots": roots(files),
@@ -394,7 +431,7 @@ def entry(recipe, catalog, gh, cache, site):
     }
     if skipped:
         out["skipped"] = skipped
-    from_archive = lambda: None if recipe.get("into") else archive_image(path, kind, strip, files)
+    from_archive = lambda: archive_image(path, kind, origin, files)
     from_catalog = lambda: meta.get("image") and fetch(meta["image"], cache)
     add_pictures(out, recipe["id"], [from_archive, from_catalog], site)
     return out

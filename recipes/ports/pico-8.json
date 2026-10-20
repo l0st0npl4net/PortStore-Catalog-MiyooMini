@@ -1,0 +1,15 @@
+{
+  "id": "pico-8",
+  "catalog": "Pico-8 Wrapper",
+  "github": "XK9274/pico-8-wrapper-miyoo",
+  "asset": "^picov[\\d.]+\\.tar\\.gz$",
+  "strip": "",
+  "into": "App/",
+  "needs": [
+    {
+      "what": "pico8_dyn and pico8.dat from your Raspberry Pi copy of PICO-8 (Lexaloffle)",
+      "hint": "See the port's page for where they go.",
+      "check": []
+    }
+  ]
+}

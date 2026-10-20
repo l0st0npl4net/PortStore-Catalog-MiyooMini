@@ -1,0 +1,23 @@
+{
+  "id": "postal",
+  "catalog": "POSTAL",
+  "github": "bostrt/POSTAL-miyoo",
+  "asset": "^POSTAL-miyoo-build\\.tar$",
+  "map": [
+    [
+      "Postal1.port",
+      "Roms/PORTS/Shortcuts/Postal1.port"
+    ],
+    [
+      "",
+      "Roms/PORTS/Games/Postal/"
+    ]
+  ],
+  "needs": [
+    {
+      "what": "POSTAL game files",
+      "hint": "See the port's page for which files go into Roms/PORTS/Games/Postal.",
+      "check": []
+    }
+  ]
+}

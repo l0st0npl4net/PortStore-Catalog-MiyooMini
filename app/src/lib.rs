@@ -36,6 +36,19 @@ pub enum State {
 
 /// The card and how to reach the catalog. The catalog itself is the caller's: it is
 /// replaced when downloaded again, while jobs share the store.
+fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
+    if from.is_dir() {
+        fs::create_dir_all(to)?;
+        for entry in fs::read_dir(from)? {
+            let entry = entry?;
+            copy_tree(&entry.path(), &to.join(entry.file_name()))?;
+        }
+        Ok(())
+    } else {
+        fs::copy(from, to).map(|_| ())
+    }
+}
+
 pub struct Store {
     pub card: Card,
     pub index_url: String,
@@ -173,9 +186,58 @@ impl Store {
         Ok(rec)
     }
 
+    /// Where Package Manager keeps Ports Collection, ready to install.
+    fn ports_collection_package(&self) -> PathBuf {
+        self.card.root.join("App/PackageManager/data/Emu/Ports Collection")
+    }
+
+    /// Install Onion's Ports Collection as Package Manager does: its files copied to
+    /// the card, then its install.sh run where it lies.
+    pub fn add_ports_collection(&self) -> io::Result<()> {
+        let package = self.ports_collection_package();
+        if !package.is_dir() {
+            return Err(io::Error::other(
+                "Package Manager's Ports Collection is not on the card: add it in Package Manager (Emulators)",
+            ));
+        }
+        for entry in fs::read_dir(&package)? {
+            let entry = entry?;
+            copy_tree(&entry.path(), &self.card.root.join(entry.file_name()))?;
+        }
+        let main = package.join("Emu/PORTS");
+        if main.join("install.sh").is_file() {
+            let status = std::process::Command::new("sh")
+                .arg("./install.sh")
+                .current_dir(&main)
+                .status()?;
+            if !status.success() {
+                return Err(io::Error::other(format!("Ports Collection's install.sh: {status}")));
+            }
+        }
+        unsafe { libc::sync() };
+        self.mark_import();
+        Ok(())
+    }
+
+    /// Put right what an earlier Port Store (or catalog) left otherwise on the card.
+    pub fn repair(&self, index: &Index) {
+        let mut changed = self.card.repair_ports();
+        for port in &index.ports {
+            match self.card.conform(port) {
+                Ok(true) => changed = true,
+                Ok(false) => {}
+                Err(e) => eprintln!("portstore: {}: {e}", port.id),
+            }
+        }
+        if changed {
+            self.mark_import();
+        }
+    }
+
     /// launch.sh runs Onion's ~Import ports when Port Store exits, so new shortcuts
     /// show up (and those of ports still waiting for their game files stay hidden).
     fn mark_import(&self) {
+        let _ = fs::create_dir_all(self.card.home.join("cache"));
         let _ = fs::write(self.card.home.join("cache").join("import"), b"");
     }
 }

@@ -39,6 +39,9 @@ the index is built without pictures.
 | `name`, `group`, `categories`, `status`, `assets`, `porter`, `about`, `url`, `image` | override or replace catalog metadata. Category `app` puts a port under Apps, the rest under Games; ports of a `group` are listed together under its heading |
 | `github`, `asset`, `tag`, `prerelease` | release search: repository, file name regex, tag regex, allow pre-releases |
 | `into` | a folder the whole archive goes into (an app zipped without its `App/<Name>/`) |
+| `map` | `[from, to]` prefixes for releases laid out otherwise (`["Games/", "Roms/PORTS/Games/"]`); the first match wins, the rest is left out |
+| `skip` | card paths not installed though the release has them (`App/<Game>/config.json`: a game in Games → Ports only, not in Apps) |
+| `shortcut` | `{ "launch": "App/X/launch.sh", "image": "App/X/icon.png" }`: Port Store makes an Onion Ports shortcut for a game released as an app |
 | `strip` | prefix taken off every member (default: a single wrapper folder that is not a card folder) |
 | `take` | path prefixes (from the card's root) that are installed; default `App/`, `Roms/PORTS/` |
 | `keep` | files of the release the user changes (settings): installed once, then never overwritten or removed (prefix if it ends in `/`). Files the release does not have (saves, game data) are never touched anyway |
@@ -49,6 +52,10 @@ Build locally (60 GitHub API requests an hour without a token):
 ```sh
 GITHUB_TOKEN=… python3 index/build.py --out site/index.json --cache .cache
 ```
+
+Port Store itself is in the catalog (`recipes/portstore.json`): `tools/release.sh INDEX_URL`
+makes `out/PortStore-<version>.zip`, published as a release of this repository with the tag
+`v<version>` (the version is `app/Cargo.toml`'s); the device then offers it as an update.
 
 ## Device
 
@@ -64,7 +71,11 @@ without Wi-Fi), `cache/` (log, last catalog, ROM checksums).
 Install is file by file: unpacked into a staging folder first, then moved into place;
 updates remove only files the new version dropped; removal leaves `keep` files and
 anything Port Store did not put there. After changes to `Roms/PORTS` shortcuts, Onion's
-`~Import ports` runs when Port Store exits.
+`~Import ports` runs when Port Store exits; `Roms/PORTS/Games` is made with them (the import
+reads a shortcut's `GameDir` from there, `../../../App/<Game>` too, and Ports Collection does
+not make it). Without Ports Collection, Port Store offers to add it from Package Manager's data,
+as Package Manager does. On start, installed ports are brought in line with the catalog
+(files it now skips go, shortcuts it now makes are made).
 
 Commands for testing (also off the device, with `PORTSTORE_CARD`, `PORTSTORE_HOME`):
 `portstore list | install ID | remove ID | needs ID | refresh | shots DIR [ID…]`.

@@ -1,0 +1,6 @@
+{
+  "id": "minecraft-bedrock",
+  "catalog": "Minecraft: Bedrock Edition 1.2",
+  "github": "DankMiimer/minecraft-bedrock-miyoo-mini-plus",
+  "asset": "^minecraft-bedrock-miyoo-mini-plus-v[\\d.]+\\.zip$"
+}

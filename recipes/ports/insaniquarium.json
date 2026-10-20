@@ -1,0 +1,25 @@
+{
+  "id": "insaniquarium",
+  "catalog": "Insaniquarium Deluxe",
+  "github": "RAlexander777/Insaniquarium_Miyoo_Mini_Flip",
+  "asset": "^Insaniquarium-Miyoo-v[\\d.]+\\.zip$",
+  "map": [
+    [
+      "Insaniquarium.port",
+      "Roms/PORTS/Shortcuts/Insaniquarium.port"
+    ],
+    [
+      "Games/",
+      "Roms/PORTS/Games/"
+    ]
+  ],
+  "needs": [
+    {
+      "what": "Insaniquarium Deluxe files from your PC copy (data, fishsongs, images, music, properties, sounds)",
+      "hint": "Copy those folders into Roms/PORTS/Games/Insaniquarium.",
+      "check": [
+        "Roms/PORTS/Games/Insaniquarium/images"
+      ]
+    }
+  ]
+}

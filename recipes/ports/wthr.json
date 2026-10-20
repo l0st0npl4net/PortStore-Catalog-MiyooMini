@@ -1,0 +1,7 @@
+{
+  "id": "wthr",
+  "catalog": "wthr",
+  "github": "trashplusplus/wthr",
+  "asset": "^Wthr.*\\.zip$",
+  "into": "App/wthr/"
+}

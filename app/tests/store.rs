@@ -7,7 +7,7 @@ use std::sync::atomic::AtomicBool;
 
 use portstore::archive;
 use portstore::fetch::hex;
-use portstore::index::{File, Index, Install, Need, Port};
+use portstore::index::{File, Index, Install, Need, Port, Shortcut};
 use portstore::install::twin;
 use portstore::needs::{self, Have, Roms};
 use portstore::{State, Store};
@@ -357,6 +357,37 @@ fn install_update_and_remove_leave_the_users_files() {
 }
 
 #[test]
+fn shortcuts_get_the_folder_onions_import_looks_from() {
+    // miyoo64's shortcuts say GameDir="../../../App/<Game>", which ~Import ports
+    // reads from Roms/PORTS/Games: without that folder the port shows as not found.
+    let card = temp("games-dir");
+    let src = temp("games-dir-src");
+    let s = store(&card);
+    let z = src.join("Game-1.0.zip");
+    zip(
+        &z,
+        &[
+            ("Game-1.0/App/Game/launch.sh", b"x", false),
+            ("Game-1.0/App/Game/saves/", b"", false),
+            ("Game-1.0/Roms/PORTS/Shortcuts/Game.port", b"GameDir=\"../../../App/Game\"", false),
+            ("Game-1.0/Tools/", b"", false),
+        ],
+    );
+    s.install(&port("game", &z, "1.0"), &AtomicBool::new(false), &mut |_| {}).unwrap();
+    assert!(card.join("Roms/PORTS/Games").is_dir());
+    assert!(card.join("Roms/PORTS/Games/../../../App/Game/launch.sh").exists());
+    assert!(card.join("App/Game/saves").is_dir(), "the archive's empty folders too");
+    assert!(!card.join("Tools").exists());
+
+    // A card left without it by an earlier Port Store is put right on start.
+    fs::remove_dir(card.join("Roms/PORTS/Games")).unwrap();
+    fs::remove_file(card.join("App/PortStore/cache/import")).unwrap();
+    s.repair(&Index::default());
+    assert!(card.join("Roms/PORTS/Games").is_dir());
+    assert!(card.join("App/PortStore/cache/import").exists(), "and ~Import ports runs again");
+}
+
+#[test]
 fn a_removed_port_takes_its_empty_folders_along() {
     let card = temp("card-empty");
     let src = temp("card-empty-src");
@@ -536,4 +567,118 @@ fn the_newest_catalog_at_hand_is_used() {
     assert_eq!(s.load_index().generated, "2026-10-21T00:00:00Z");
     write(card.join("App/PortStore/index.json"), "2026-10-22T00:00:00Z");
     assert_eq!(s.load_index().generated, "2026-10-22T00:00:00Z");
+}
+
+#[test]
+fn a_game_released_as_an_app_gets_a_ports_shortcut_and_leaves_apps() {
+    let card = temp("made-shortcut");
+    let src = temp("made-shortcut-src");
+    let s = store(&card);
+    let z = src.join("petals.zip");
+    zip(&z, &[("launch.sh", b"./petals", false), ("config.json", b"{}", false), ("icon.png", b"PNG", false)]);
+    let mut p = port("petals", &z, "1.0");
+    p.name = "Petals: Around the Rose".into();
+    p.strip = String::new();
+    p.into = "App/Petals/".into();
+    p.skip = vec!["App/Petals/config.json".into()];
+    p.shortcut = Some(Shortcut { launch: "App/Petals/launch.sh".into(), image: "App/Petals/icon.png".into() });
+    let rec = s.install(&p, &AtomicBool::new(false), &mut |_| {}).unwrap();
+    assert!(!card.join("App/Petals/config.json").exists(), "not in Apps");
+    let sc = fs::read_to_string(card.join("Roms/PORTS/Shortcuts/Petals Around the Rose.port")).unwrap();
+    assert!(sc.starts_with("#!/bin/sh\n"), "{sc}");
+    assert!(sc.contains("GameDir=\"../../../App/Petals\"\n"), "{sc}");
+    assert!(sc.contains("GameDataFile=\"launch.sh\"\n"), "{sc}");
+    assert!(sc.contains("\n    export LD_PRELOAD="), "{sc}");
+    assert_eq!(fs::read(card.join("Roms/PORTS/Imgs/Petals Around the Rose.png")).unwrap(), b"PNG");
+    assert!(rec.shortcuts);
+    assert!(card.join("Roms/PORTS/Games").is_dir());
+    // What Onion's ~Import ports checks: GameDir from Roms/PORTS/Games, then the file.
+    assert!(card.join("Roms/PORTS/Games/../../../App/Petals/launch.sh").exists());
+    s.remove("petals", Some(&p)).unwrap();
+    assert!(!card.join("Roms/PORTS/Shortcuts/Petals Around the Rose.port").exists());
+    assert!(!card.join("Roms/PORTS/Imgs/Petals Around the Rose.png").exists());
+}
+
+#[test]
+fn an_update_takes_away_a_file_now_skipped() {
+    let card = temp("skip-update");
+    let src = temp("skip-update-src");
+    let s = store(&card);
+    let z = src.join("Game-1.0.zip");
+    zip(&z, &[("Game-1.0/App/Game/launch.sh", b"x", false), ("Game-1.0/App/Game/config.json", b"{}", false)]);
+    let p1 = port("game", &z, "1.0");
+    s.install(&p1, &AtomicBool::new(false), &mut |_| {}).unwrap();
+    assert!(card.join("App/Game/config.json").exists());
+    let mut p2 = port("game", &z, "1.0b");
+    p2.skip = vec!["App/Game/config.json".into()];
+    s.install(&p2, &AtomicBool::new(false), &mut |_| {}).unwrap();
+    assert!(!card.join("App/Game/config.json").exists(), "the game leaves Apps on update");
+    assert!(card.join("App/Game/launch.sh").exists());
+}
+
+#[test]
+fn a_catalog_that_now_skips_a_file_or_makes_a_shortcut_is_followed_on_start() {
+    let card = temp("conform");
+    let src = temp("conform-src");
+    let s = store(&card);
+    let z = src.join("Game-1.0.zip");
+    zip(&z, &[("Game-1.0/App/Game/launch.sh", b"x", false), ("Game-1.0/App/Game/config.json", b"{}", false)]);
+    let p1 = port("game", &z, "1.0");
+    s.install(&p1, &AtomicBool::new(false), &mut |_| {}).unwrap();
+    let _ = fs::remove_file(card.join("App/PortStore/cache/import"));
+    let mut p2 = port("game", &z, "1.0");
+    p2.skip = vec!["App/Game/config.json".into()];
+    p2.shortcut = Some(Shortcut { launch: "App/Game/launch.sh".into(), image: String::new() });
+    s.repair(&Index { format: 1, ports: vec![p2.clone()], ..Index::default() });
+    assert!(!card.join("App/Game/config.json").exists());
+    assert!(card.join("Roms/PORTS/Shortcuts/Game.port").exists());
+    assert!(card.join("App/PortStore/cache/import").exists());
+    assert_eq!(s.state(&p2), State::Installed("1.0".into()), "the same version still");
+    s.remove("game", Some(&p2)).unwrap();
+    assert!(!card.join("Roms/PORTS/Shortcuts/Game.port").exists());
+}
+
+#[test]
+fn ports_collection_is_added_as_package_manager_does() {
+    let card = temp("ports-collection");
+    let s = store(&card);
+    assert!(s.add_ports_collection().is_err(), "no package, nothing to add");
+    let pkg = card.join("App/PackageManager/data/Emu/Ports Collection");
+    fs::create_dir_all(pkg.join("Emu/PORTS")).unwrap();
+    fs::create_dir_all(pkg.join("Roms/PORTS/Shortcuts/Action")).unwrap();
+    fs::write(pkg.join("Emu/PORTS/config.json"), "{}").unwrap();
+    fs::write(pkg.join("Emu/PORTS/install.sh"), "touch ran-install\n").unwrap();
+    fs::write(pkg.join("Roms/PORTS/Shortcuts/Action/Gong.port"), "x").unwrap();
+    assert!(!s.has_ports_collection());
+    s.add_ports_collection().unwrap();
+    assert!(s.has_ports_collection());
+    assert!(card.join("Roms/PORTS/Shortcuts/Action/Gong.port").exists());
+    assert!(pkg.join("Emu/PORTS/ran-install").exists(), "install.sh ran where Package Manager runs it");
+    assert!(card.join("App/PortStore/cache/import").exists());
+}
+
+#[test]
+fn a_release_laid_out_otherwise_is_mapped_onto_the_card() {
+    let card = temp("map");
+    let src = temp("map-src");
+    let s = store(&card);
+    let z = src.join("Game-1.0.zip");
+    zip(
+        &z,
+        &[
+            ("Game-1.0/Game.port", b"GameDir=\"Game\"", false),
+            ("Game-1.0/Games/Game/game", b"elf", false),
+            ("Game-1.0/README.txt", b"read me", false),
+        ],
+    );
+    let mut p = port("game", &z, "1.0");
+    p.map = vec![
+        ["Game.port".into(), "Roms/PORTS/Shortcuts/Game.port".into()],
+        ["Games/".into(), "Roms/PORTS/Games/".into()],
+    ];
+    let rec = s.install(&p, &AtomicBool::new(false), &mut |_| {}).unwrap();
+    assert!(card.join("Roms/PORTS/Shortcuts/Game.port").exists());
+    assert!(card.join("Roms/PORTS/Games/Game/game").exists());
+    assert!(!card.join("README.txt").exists());
+    assert_eq!(rec.files.len(), 2);
 }

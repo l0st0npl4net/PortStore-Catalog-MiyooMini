@@ -1,0 +1,6 @@
+{
+  "id": "guardianplay",
+  "catalog": "guardianplay",
+  "github": "mkl159/guardianplay-onion",
+  "asset": "^GuardianPlay-v[\\d.]+\\.zip$"
+}

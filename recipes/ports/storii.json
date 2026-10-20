@@ -1,0 +1,6 @@
+{
+  "id": "storii",
+  "catalog": "storii",
+  "github": "pcorbel/storii",
+  "asset": "^Storii-v[\\d.]+\\.zip$"
+}

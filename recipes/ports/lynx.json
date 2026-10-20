@@ -1,0 +1,8 @@
+{
+  "id": "lynx",
+  "catalog": "Lynx",
+  "github": "tailtwo/lynx-miyoo",
+  "asset": "^lynx\\.zip$",
+  "strip": "",
+  "into": "App/"
+}

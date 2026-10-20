@@ -31,16 +31,64 @@ pub enum Step {
     Finish,
 }
 
+const SHORTCUTS: &str = "Roms/PORTS/Shortcuts/";
+/// Onion's ~Import ports looks for a port's files from here, also for those outside
+/// it ("../../../App/MarioKart64"): without the folder that path leads nowhere and
+/// the port is hidden as "not found". Ports Collection does not make it.
+const GAMES: &str = "Roms/PORTS/Games";
+
 /// Where a member goes on the card, if it goes there at all.
 pub fn target(port: &Port, name: &str) -> Option<String> {
     let rel = name.strip_prefix(port.strip.as_str())?;
-    if !port.into.is_empty() {
-        return Some(format!("{}{rel}", port.into));
+    // As index/build.py's target: into one folder, by the map, or as it is (take).
+    let to = if !port.into.is_empty() {
+        format!("{}{rel}", port.into)
+    } else if !port.map.is_empty() {
+        let [from, to] = port.map.iter().find(|[from, _]| rel.starts_with(from.as_str()))?;
+        format!("{to}{}", &rel[from.len()..])
+    } else if port.take.iter().any(|t| rel.starts_with(t.as_str())) {
+        rel.to_string()
+    } else {
+        return None;
+    };
+    (!port.skip.iter().any(|s| to.starts_with(s.as_str()))).then_some(to)
+}
+
+/// The Ports shortcut (and its picture) Port Store makes for `port`: (path, bytes).
+pub fn made_shortcut(root: &Path, port: &Port) -> Vec<(String, Vec<u8>)> {
+    let Some(sc) = &port.shortcut else {
+        return Vec::new();
+    };
+    let Some((dir, launch)) = sc.launch.rsplit_once('/') else {
+        return Vec::new();
+    };
+    // A file name Onion lists the game by: no folder separators or quotes.
+    let name: String = port
+        .name
+        .chars()
+        .map(|c| if matches!(c, '/' | '\\' | '"' | ':' | '*' | '?' | '<' | '>' | '|') { ' ' } else { c })
+        .collect();
+    let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
+    let text = format!(
+        "#!/bin/sh\n\
+         # {name}: made by Port Store for Onion's Ports; the game is in {dir}.\n\
+         GameName=\"{name}\"\n\
+         GameDir=\"../../../{dir}\"\n\
+         GameDataFile=\"{launch}\"\n\
+         cd \"/mnt/SDCARD/{dir}\" || exit 1\n\
+         # Sound through Onion's audioserver, as Apps have it.\n\
+         if pgrep audioserver > /dev/null 2>&1 && [ -f /mnt/SDCARD/miyoo/lib/libpadsp.so ]; then\n\
+         \x20   export LD_PRELOAD=/mnt/SDCARD/miyoo/lib/libpadsp.so\n\
+         fi\n\
+         exec sh \"./{launch}\"\n"
+    );
+    let mut out = vec![(format!("{SHORTCUTS}{name}.port"), text.into_bytes())];
+    if !sc.image.is_empty() {
+        if let Ok(png) = fs::read(root.join(&sc.image)) {
+            out.push((format!("Roms/PORTS/Imgs/{name}.png"), png));
+        }
     }
-    port.take
-        .iter()
-        .any(|t| rel.starts_with(t.as_str()))
-        .then(|| rel.to_string())
+    out
 }
 
 /// `.port` and `.notfound` are the same shortcut: ~Import ports renames one to the other.
@@ -89,6 +137,50 @@ impl Card {
         let tmp = path.with_extension("json.part");
         fs::write(&tmp, serde_json::to_vec_pretty(rec).unwrap())?;
         fs::rename(tmp, path)
+    }
+
+    /// Make Roms/PORTS/Games for installed ports with shortcuts, if it is missing
+    /// (Port Store before 0.2 did not): whether it was, so ~Import ports runs again.
+    pub fn repair_ports(&self) -> bool {
+        let games = self.root.join(GAMES);
+        let wanted = !games.exists() && self.all_installed().iter().any(|r| r.shortcuts);
+        wanted && fs::create_dir_all(games).is_ok()
+    }
+
+    /// Bring an installed port in line with how the catalog installs it now, without
+    /// installing it again: files it no longer installs (`skip`) go, a shortcut it now
+    /// makes is made. Whether anything changed.
+    pub fn conform(&self, port: &Port) -> io::Result<bool> {
+        let Some(mut rec) = self.installed(&port.id) else {
+            return Ok(false);
+        };
+        let skipped: Vec<String> = rec
+            .files
+            .iter()
+            .filter(|f| port.skip.iter().any(|s| f.starts_with(s.as_str())))
+            .cloned()
+            .collect();
+        let made: Vec<(String, Vec<u8>)> = made_shortcut(&self.root, port)
+            .into_iter()
+            .filter(|(path, _)| !rec.files.contains(path))
+            .collect();
+        if skipped.is_empty() && made.is_empty() {
+            return Ok(false);
+        }
+        self.remove_files(&port.id, &skipped);
+        rec.files.retain(|f| !skipped.contains(f));
+        for (path, bytes) in made {
+            let dest = self.root.join(&path);
+            fs::create_dir_all(dest.parent().unwrap())?;
+            fs::write(dest, bytes)?;
+            rec.files.push(path);
+        }
+        rec.shortcuts = rec.files.iter().any(|f| f.starts_with(SHORTCUTS));
+        if rec.shortcuts {
+            fs::create_dir_all(self.root.join(GAMES))?;
+        }
+        self.write_record(&rec)?;
+        Ok(true)
     }
 
     /// A port of the catalog already on the card, put there by hand.
@@ -162,7 +254,6 @@ impl Card {
         progress(Step::Finish);
 
         let before = self.installed(&port.id);
-        let mut placed = Vec::new();
         for f in &files {
             let dest = self.root.join(f);
             if port.kept(f) && dest.exists() {
@@ -173,9 +264,26 @@ impl Card {
                 let _ = fs::remove_file(self.root.join(other));
             }
             move_file(&stage.join(f), &dest)?;
-            placed.push(f.clone());
         }
         let _ = remove_tree(&stage);
+        // The archive's folders, empty ones too: a port may count on them.
+        for m in members.iter().filter(|m| m.dir && !m.link && archive::safe_name(&m.name)) {
+            if let Some(to) = target(port, &m.name) {
+                fs::create_dir_all(self.root.join(to))?;
+            }
+        }
+        for (path, bytes) in made_shortcut(&self.root, port) {
+            let dest = self.root.join(&path);
+            fs::create_dir_all(dest.parent().unwrap())?;
+            if let Some(other) = twin(&path) {
+                let _ = fs::remove_file(self.root.join(other));
+            }
+            fs::write(&dest, bytes)?;
+            files.push(path);
+        }
+        if files.iter().any(|f| f.starts_with(SHORTCUTS)) {
+            fs::create_dir_all(self.root.join(GAMES))?;
+        }
 
         // An update: what the old version had and the new one has not goes.
         let now: BTreeSet<&String> = files.iter().collect();

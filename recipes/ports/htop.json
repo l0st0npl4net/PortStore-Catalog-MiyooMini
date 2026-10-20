@@ -1,0 +1,7 @@
+{
+  "id": "htop",
+  "catalog": "miyoo-htop",
+  "github": "allanxp4/miyoo-htop",
+  "asset": "^Htop\\.zip$",
+  "into": "App/Htop/"
+}

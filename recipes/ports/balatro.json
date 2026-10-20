@@ -1,0 +1,7 @@
+{
+  "id": "balatro",
+  "catalog": "Balatro",
+  "github": "Producdevity/balatro-miyoo-mini-port",
+  "asset": "^balatro-miyoo-mini\\.zip$",
+  "prerelease": true
+}

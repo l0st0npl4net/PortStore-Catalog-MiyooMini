@@ -1,0 +1,12 @@
+{
+  "id": "better-wifi",
+  "catalog": "Better WiFi",
+  "github": "XK9274/better-wifi-miyoo",
+  "asset": "^BetterWifi-v[\\d.]+\\.zip$",
+  "map": [
+    [
+      "BetterWifi/",
+      "App/BetterWifi/"
+    ]
+  ]
+}

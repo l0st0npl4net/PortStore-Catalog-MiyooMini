@@ -1,0 +1,19 @@
+{
+  "id": "freej2me",
+  "catalog": "FreeJ2ME",
+  "github": "aweigit/freej2me-miyoomini",
+  "asset": "^miyoomini-freej2me\\.zip$",
+  "needs": [
+    {
+      "what": "J2ME games (.jar)",
+      "hint": "Put them in Emu/JAVA/rom; FreeJ2ME then shows in Games.",
+      "check": []
+    }
+  ],
+  "map": [
+    [
+      "JAVA/",
+      "Emu/JAVA/"
+    ]
+  ]
+}

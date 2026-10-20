@@ -35,4 +35,13 @@ cat > "$app/downloads/README.txt" <<'TXT'
 No Wi-Fi? Download a port's release file on a computer (the file named on the
 port's page in Port Store) and put it here: Port Store installs it from here.
 TXT
-echo "packaged: $app"
+# Port Store's own install record, so the catalog's Port Store shows as installed
+# and its updates as updates (tools/release.sh makes the release of the same version).
+version=v$(sed -n 's/^version = "\(.*\)"/\1/p' "$here/app/Cargo.toml" | head -n 1)
+mkdir -p "$app/installed"
+(cd "$out" && find App/PortStore -type f ! -path "App/PortStore/installed/*" | sort) | python3 -I -c '
+import json, sys
+files = [l.strip() for l in sys.stdin if l.strip()]
+print(json.dumps({"id": "portstore", "version": sys.argv[1], "files": files, "shortcuts": False}, indent=1))
+' "$version" > "$app/installed/portstore.json"
+echo "packaged: $app ($version)"

@@ -3,5 +3,12 @@
   "catalog": "Petals Around the Rose",
   "github": "schizophreek/petals",
   "asset": "^petals\\.zip$",
-  "into": "App/Petals/"
+  "into": "App/Petals/",
+  "skip": [
+    "App/Petals/config.json"
+  ],
+  "shortcut": {
+    "launch": "App/Petals/launch.sh",
+    "image": "App/Petals/icon.png"
+  }
 }

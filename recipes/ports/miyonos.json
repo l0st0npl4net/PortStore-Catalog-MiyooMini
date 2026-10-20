@@ -1,0 +1,7 @@
+{
+  "id": "miyonos",
+  "catalog": "Miyonos",
+  "github": "ElijahTowers/Miyonos",
+  "asset": "^Miyonos-App-[\\d.]+\\.zip$",
+  "into": "App/Miyonos/"
+}

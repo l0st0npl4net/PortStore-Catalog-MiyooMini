@@ -1,0 +1,6 @@
+{
+  "id": "miyoodeck",
+  "catalog": "miyoodeck",
+  "github": "mkl159/miyoodeck",
+  "asset": "^MiyooDeck-v[\\d.]+\\.zip$"
+}

@@ -1,0 +1,6 @@
+{
+  "id": "audiobook",
+  "catalog": "MiyooAudiobook",
+  "github": "smonbon/MiyooAudiobook",
+  "asset": "^MiyooAudiobook\\.zip$"
+}

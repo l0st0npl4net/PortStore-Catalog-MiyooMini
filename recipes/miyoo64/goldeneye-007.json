@@ -34,5 +34,8 @@
     "mr-finster"
   ],
   "about": "Native N64 port built from the GoldenEye 007 decompilation. No emulation: runs on the Mini's CPU with a software renderer. Save states (9 slots + auto save). First start takes about a minute.",
-  "url": "https://github.com/mr-finster/miyoo64/tree/main/goldeneye-007"
+  "url": "https://github.com/mr-finster/miyoo64/tree/main/goldeneye-007",
+  "skip": [
+    "App/GoldenEye/config.json"
+  ]
 }

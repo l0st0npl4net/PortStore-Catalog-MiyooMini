@@ -53,6 +53,17 @@ pub struct Port {
     /// A folder all of the archive goes into (an app zipped without its App/<Name>/).
     #[serde(default)]
     pub into: String,
+    /// [from, to] prefixes: a member under `from` (past `strip`) goes under `to`, the
+    /// first that matches; others are left out. For releases laid out otherwise.
+    #[serde(default)]
+    pub map: Vec<[String; 2]>,
+    /// Card paths (prefixes) not installed even though `take` has them: an App's
+    /// config.json for a game that belongs in Games > Ports only.
+    #[serde(default)]
+    pub skip: Vec<String>,
+    /// A shortcut for Onion's Ports that Port Store makes, for a game released as an app.
+    #[serde(default)]
+    pub shortcut: Option<Shortcut>,
     /// The user's: never removed or overwritten (a prefix when it ends in '/').
     #[serde(default)]
     pub keep: Vec<String>,
@@ -69,6 +80,15 @@ pub struct File {
     pub sha256: String,
     /// "zip", "tar" or "tar.gz".
     pub kind: String,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug, Default)]
+pub struct Shortcut {
+    /// The game's own launcher, from the card's root (App/Petals/launch.sh).
+    pub launch: String,
+    /// A picture of the port's, copied for the Ports list (App/Petals/icon.png).
+    #[serde(default)]
+    pub image: String,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, Default)]
@@ -146,6 +166,11 @@ impl Index {
 impl Port {
     pub fn owned(&self) -> bool {
         self.assets == "owned"
+    }
+
+    /// Whether the port shows in Onion's Games > Ports (shortcuts of its own or made).
+    pub fn in_ports(&self) -> bool {
+        self.shortcut.is_some() || self.take.iter().any(|t| t.starts_with("Roms/PORTS"))
     }
 
     /// Apps (catalog category "app"), as against games.

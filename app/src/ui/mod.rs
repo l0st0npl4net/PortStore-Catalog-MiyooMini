@@ -81,6 +81,8 @@ enum Action {
     Install(String),
     Remove(String),
     Refresh,
+    /// Onion's Ports Collection, which Games > Ports needs.
+    PortsCollection,
 }
 
 #[derive(Clone, Debug)]
@@ -98,8 +100,15 @@ enum Msg {
     /// A ROM being read to check a port's needs.
     Checking(String),
     Needs(String, Vec<Have>),
-    Done(Result<String, String>),
+    Done(Result<Finished, String>),
     Index(Result<Index, String>),
+}
+
+/// A job done.
+enum Finished {
+    Installed(String),
+    Removed,
+    PortsCollection,
 }
 
 #[derive(PartialEq, Eq)]
@@ -135,6 +144,7 @@ pub struct App {
 impl App {
     pub fn new(store: Store) -> App {
         let index = store.load_index();
+        store.repair(&index);
         let store = Arc::new(store);
         let mut app = App {
             pictures: Pictures::new(store.clone()),
@@ -388,6 +398,13 @@ impl App {
                 self.needs.remove(&id);
                 self.check_needs(id);
             }
+            Key::Select if port.in_ports() && !self.store.has_ports_collection() => {
+                self.under.push(self.view.clone());
+                self.view = View::Confirm {
+                    text: "Add Onion's Ports Collection (as Package Manager does)? Games then has Ports, where Port Store's games show.".into(),
+                    yes: Action::PortsCollection,
+                };
+            }
             _ => {}
         }
     }
@@ -421,6 +438,7 @@ impl App {
             Action::Install(id) => format!("Installing {}", self.port(id).map_or(id.as_str(), |p| &p.name)),
             Action::Remove(id) => format!("Removing {}", self.port(id).map_or(id.as_str(), |p| &p.name)),
             Action::Refresh => "Downloading the catalog".to_string(),
+            Action::PortsCollection => "Adding Ports Collection".to_string(),
         };
         if matches!(self.view, View::Confirm { .. }) {
             self.view = self.under.pop().unwrap_or(View::List);
@@ -429,7 +447,7 @@ impl App {
         self.view = View::Busy { title, step: None };
         let port = match &action {
             Action::Install(id) | Action::Remove(id) => self.port(id).cloned(),
-            Action::Refresh => None,
+            Action::Refresh | Action::PortsCollection => None,
         };
         std::thread::spawn(move || {
             let done = match action {
@@ -443,9 +461,10 @@ impl App {
                         .install(&port, &cancel, &mut |step| {
                             let _ = tx.send(Msg::Step(step));
                         })
-                        .map(|_| port.id.clone())
+                        .map(|_| Finished::Installed(port.id.clone()))
                 }
-                Action::Remove(id) => store.remove(&id, port.as_ref()).map(|_| String::new()),
+                Action::Remove(id) => store.remove(&id, port.as_ref()).map(|_| Finished::Removed),
+                Action::PortsCollection => store.add_ports_collection().map(|_| Finished::PortsCollection),
             };
             let _ = tx.send(Msg::Done(done.map_err(|e| e.to_string())));
         });
@@ -474,6 +493,7 @@ impl App {
                     self.back();
                     match result {
                         Ok(index) => {
+                            self.store.repair(&index);
                             self.index = index;
                             self.recount();
                             let n = self.index.ports.len();
@@ -487,8 +507,12 @@ impl App {
                     self.back();
                     self.recount();
                     match result {
-                        Ok(id) if !id.is_empty() => self.installed(&id),
-                        Ok(_) => {
+                        Ok(Finished::PortsCollection) => self.message(
+                            "Ports Collection added",
+                            "Games now has Ports. Port Store's games show there once it closes.",
+                        ),
+                        Ok(Finished::Installed(id)) => self.installed(&id),
+                        Ok(Finished::Removed) => {
                             self.view = View::List;
                             self.message("Removed", "The port is off the card.");
                         }
@@ -503,11 +527,21 @@ impl App {
     fn installed(&mut self, id: &str) {
         let Some(port) = self.port(id).cloned() else { return };
         self.needs.remove(id);
+        if id == "portstore" {
+            let text = format!("Port Store {} is on the card: close it and start it again.", port.version);
+            return self.message("Updated", &text);
+        }
         let mut text = format!("{} {} is on the card.", port.name, port.version);
-        let shortcuts = port.take.iter().any(|t| t.starts_with("Roms/PORTS"));
+        let shortcuts = port.in_ports();
         let apps = port.install.roots.iter().any(|r| r.starts_with("App/"));
         if shortcuts && !self.store.has_ports_collection() {
-            text += " To see it in Games, add Ports Collection in Package Manager (Emulators).";
+            if !port.needs.is_empty() {
+                self.check_needs(id.to_string());
+            }
+            text += " Games shows ports with Onion's Ports Collection, which is not on the card. Add it now (as Package Manager does)?";
+            self.under.push(self.view.clone());
+            self.view = View::Confirm { text, yes: Action::PortsCollection };
+            return;
         } else if shortcuts {
             text += " It is in Games → Ports once Port Store closes.";
         } else if apps {
@@ -537,9 +571,13 @@ impl App {
             View::List => self.draw_list(c),
             View::Details { id, scroll } => self.draw_details(c, &id, scroll),
             View::Manual { at, scroll } => self.draw_manual(c, at, scroll),
-            View::Confirm { text, .. } => {
+            View::Confirm { text, yes } => {
                 self.draw_under(c);
-                dialog(c, "Are you sure?", &text, None, "A  Yes      B  No");
+                let title = match yes {
+                    Action::PortsCollection => "Ports Collection",
+                    _ => "Are you sure?",
+                };
+                dialog(c, title, &text, None, "A  Yes      B  No");
             }
             View::Busy { title, step } => {
                 self.draw_under(c);
@@ -785,8 +823,8 @@ impl App {
             }
             lines.push((8, DIM, String::new()));
         }
-        if port.take.iter().any(|t| t.starts_with("Roms/PORTS")) && !self.store.has_ports_collection() {
-            para(c, &mut lines, 15, WARN, "Ports Collection is not on the card: add it in Package Manager (Emulators) to start this port from Games.");
+        if port.in_ports() && !self.store.has_ports_collection() {
+            para(c, &mut lines, 15, WARN, "Ports Collection is not on the card, so Games has no Ports: press Select to add it.");
             lines.push((8, DIM, String::new()));
         }
         if !port.url.is_empty() {
@@ -822,6 +860,9 @@ impl App {
         }
         if !port.needs.is_empty() {
             keys.push("Y Check again");
+        }
+        if port.in_ports() && !self.store.has_ports_collection() {
+            keys.push("Select Ports");
         }
         keys.push("B Back");
         footer(c, "", &keys.join("   "));
