@@ -1,0 +1,19 @@
+# A Port Store release published: build the catalog again at once (on main, which
+# GitHub Pages deploys from), so devices are offered the new Port Store now and not
+# at the next daily build.
+name: release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  actions: write
+
+jobs:
+  catalog:
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run index.yml --repo "$GITHUB_REPOSITORY" --ref main

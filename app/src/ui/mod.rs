@@ -521,7 +521,7 @@ impl App {
             // Port Store itself last: what is left of the queue still runs on the old one.
             Action::InstallMany(ids) => {
                 let mut q: Vec<Port> = ids.iter().filter_map(|id| self.port(id).cloned()).collect();
-                q.sort_by_key(|p| p.id == "portstore");
+                q.sort_by_key(|p| p.id == crate::SELF_ID);
                 q
             }
             _ => Vec::new(),
@@ -648,8 +648,8 @@ impl App {
 
     /// A newer Port Store in the catalog: offered once, over the list.
     fn offer_self_update(&mut self) {
-        let Some(me) = self.port("portstore").cloned() else { return };
-        let State::Update(have) = self.state("portstore") else { return };
+        let Some(me) = self.port(crate::SELF_ID).cloned() else { return };
+        let State::Update(have) = self.state(crate::SELF_ID) else { return };
         if !matches!(self.view, View::List) || self.busy {
             return;
         }
@@ -680,7 +680,7 @@ impl App {
         if !waiting.is_empty() {
             text += &format!(" Still needing your files: {}.", waiting.join(", "));
         }
-        if done.iter().any(|id| id == "portstore") {
+        if done.iter().any(|id| id == crate::SELF_ID) {
             self.restart = true;
             text += " Port Store itself was updated: it starts again now.";
         }
@@ -690,7 +690,7 @@ impl App {
     fn installed(&mut self, id: &str) {
         let Some(port) = self.port(id).cloned() else { return };
         self.needs.remove(id);
-        if id == "portstore" {
+        if id == crate::SELF_ID {
             self.restart = true;
             let text = format!("Port Store {} is on the card. It starts again now.", port.version);
             return self.message("Updated", &text);

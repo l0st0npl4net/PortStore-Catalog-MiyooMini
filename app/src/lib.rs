@@ -16,6 +16,9 @@ use std::sync::atomic::AtomicBool;
 use index::{Index, Port};
 use install::{Card, Installed, Step};
 
+/// Port Store's own entry in the catalog (recipes/portstore.json).
+pub const SELF_ID: &str = "portstore";
+
 /// The list of files for a computer to download, in downloads/.
 pub const TO_DOWNLOAD: &str = "to-download.txt";
 
@@ -115,6 +118,15 @@ impl Store {
     }
 
     pub fn state(&self, port: &Port) -> State {
+        // Port Store itself is the program running: its version is its own, however
+        // it came onto the card (an unzipped release has no install record).
+        if port.id == SELF_ID {
+            let me = format!("v{}", env!("CARGO_PKG_VERSION"));
+            return match newer(&port.version, "", &me, "") {
+                true => State::Update(me),
+                false => State::Installed(me),
+            };
+        }
         match self.card.installed(&port.id) {
             Some(rec) if rec.version == port.version => State::Installed(rec.version),
             // Newer than the catalog's (a Port Store ahead of its catalog): no update.

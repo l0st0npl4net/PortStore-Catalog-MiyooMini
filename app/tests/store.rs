@@ -834,3 +834,16 @@ fn versions_are_compared_by_their_numbers_then_by_date() {
     assert!(!newer("initial-release", "2026-09-01", "initial", "2026-10-01"));
     assert!(newer("nightly-b", "", "nightly-a", ""), "another, nothing to go by");
 }
+
+#[test]
+fn port_store_knows_its_own_version_without_an_install_record() {
+    let card = temp("self");
+    let s = store(&card);
+    let me = format!("v{}", env!("CARGO_PKG_VERSION"));
+    let mut p = Port { id: portstore::SELF_ID.into(), version: "v999.0.0".into(), ..Port::default() };
+    assert_eq!(s.state(&p), State::Update(me.clone()));
+    p.version = me.clone();
+    assert_eq!(s.state(&p), State::Installed(me.clone()));
+    p.version = "v0.0.1".into();
+    assert_eq!(s.state(&p), State::Installed(me), "an older catalog is no update");
+}

@@ -101,6 +101,9 @@ ports writes `Roms/PORTS/import.log`.
 
 ## How it works
 
+The full map for developers (the catalog's GitHub Actions, the app's modules, building,
+testing and releasing): [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+
 - `recipes/` — one JSON file per port: which release file to take and what of it goes onto
   the SD card.
 - `index/build.py` — builds `index.json` from the recipes: newest matching release, the
