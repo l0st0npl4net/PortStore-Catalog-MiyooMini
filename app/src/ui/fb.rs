@@ -17,6 +17,9 @@ const BITS: usize = 6;
 const RED: usize = 8;
 const GREEN: usize = 11;
 const BLUE: usize = 14;
+/// fb_var_screeninfo.transp: offset, length (no alpha channel when 0).
+const TRANSP: usize = 17;
+const TRANSP_LENGTH: usize = 18;
 
 pub struct Fb {
     file: std::fs::File,
@@ -27,6 +30,8 @@ pub struct Fb {
     pages: u32,
     shown: u32,
     shifts: [u32; 3],
+    /// The opaque value of the alpha channel where the layout has one.
+    alpha: u32,
 }
 
 impl Fb {
@@ -76,6 +81,13 @@ impl Fb {
             pages,
             shown,
             shifts: [var[RED], var[GREEN], var[BLUE]],
+            // The Mini's ARGB8888 takes 0xff at the top, as before (and when the
+            // driver tells no alpha channel there); other layouts only where it is.
+            alpha: match (var[TRANSP_LENGTH], [var[RED], var[GREEN], var[BLUE]]) {
+                (0, [16, 8, 0]) => 0xff00_0000,
+                (0, _) => 0,
+                (n, _) => (((1u64 << n.min(8)) - 1) as u32) << var[TRANSP],
+            },
         })
     }
 
@@ -98,13 +110,14 @@ impl Fb {
         for y in 0..h {
             let row = &mut out[(h - 1 - y) * stride..(h - 1 - y) * stride + w];
             let src = &px[y * w..(y + 1) * w];
+            let alpha = self.alpha;
             if (rs, gs, bs) == (16, 8, 0) {
                 for (d, &s) in row.iter_mut().zip(src.iter().rev()) {
-                    *d = 0xff00_0000 | s;
+                    *d = alpha | s;
                 }
             } else {
                 for (d, &s) in row.iter_mut().zip(src.iter().rev()) {
-                    *d = 0xff00_0000 | (s >> 16 & 0xff) << rs | (s >> 8 & 0xff) << gs | (s & 0xff) << bs;
+                    *d = alpha | (s >> 16 & 0xff) << rs | (s >> 8 & 0xff) << gs | (s & 0xff) << bs;
                 }
             }
         }

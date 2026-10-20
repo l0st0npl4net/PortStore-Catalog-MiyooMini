@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
-"""Keep one GitHub issue up to date with the recipes that fail: opened (or updated)
-while any has failed since an earlier build, closed when none does. In CI only.
+"""Keep one GitHub issue up to date with what goes wrong in the catalog build:
+recipes failing since an earlier build (not one failing just now: a host down for a
+minute), and warnings (a release published without its file). Opened, or the last
+one reopened, while there is any; closed when there is none. In CI only.
     GITHUB_TOKEN=… GITHUB_REPOSITORY=owner/repo python3 index/report.py site/index.json"""
 import json
 import os
@@ -22,23 +24,40 @@ def api(method, path, body=None):
         return json.load(r) if r.status != 204 else None
 
 
+def cell(text):
+    return str(text).replace("|", "/").replace("\n", " ")[:300]
+
+
 index = json.load(open(sys.argv[1], encoding="utf-8"))
-lasting = [f for f in index.get("failed", []) if f.get("since", index["generated"]) < index["generated"]]
-open_issues = [i for i in api("GET", f"/issues?state=open&labels={LABEL}") if i["title"] == TITLE]
-if lasting:
-    rows = "\n".join(f"| `{f['id']}` | [{f['file']}](../blob/main/{f['file']}) | {f['since'][:10]} | "
-                     f"{f['error'].replace('|', '/')[:300]} |" for f in lasting)
-    body = ("These recipes failed in the last two builds or more: the catalog keeps their last good "
-            "version (or leaves them out). Most often the author renamed the release file or changed "
-            "its layout.\n\n| Recipe | File | Failing since | Error |\n|---|---|---|---|\n" + rows +
-            f"\n\nCatalog built {index['generated']}. This issue closes by itself once they build again.")
-    if open_issues:
-        api("PATCH", f"/issues/{open_issues[0]['number']}", {"body": body})
+failed = index.get("failed", [])
+lasting = [f for f in failed if f.get("since", index["generated"]) < index["generated"]]
+warnings = index.get("warnings", [])
+issues = [i for i in api("GET", f"/issues?state=all&labels={LABEL}&per_page=20") if i["title"] == TITLE]
+issue = next((i for i in issues if i["state"] == "open"), issues[0] if issues else None)
+
+if lasting or warnings:
+    parts = []
+    if lasting:
+        parts.append("These recipes failed in the last two builds or more: the catalog keeps their last good "
+                     "version (or leaves them out). Most often the author renamed the release file or changed "
+                     "its layout.\n\n| Recipe | File | Failing since | Error |\n|---|---|---|---|\n"
+                     + "\n".join(f"| `{f['id']}` | [{f['file']}](../blob/main/{f['file']}) | {f['since'][:10]} | "
+                                 f"{cell(f['error'])} |" for f in lasting))
+    if warnings:
+        parts.append("Warnings:\n\n| Recipe | File | Warning |\n|---|---|---|\n"
+                     + "\n".join(f"| `{w['id']}` | [{w['file']}](../blob/main/{w['file']}) | {cell(w['warning'])} |"
+                                 for w in warnings))
+    body = "\n\n".join(parts) + f"\n\nCatalog built {index['generated']}. This issue closes by itself once all is well."
+    if issue:
+        api("PATCH", f"/issues/{issue['number']}", {"body": body, "state": "open"})
     else:
         api("POST", "/issues", {"title": TITLE, "body": body, "labels": [LABEL]})
-    print(f"{len(lasting)} recipes failing")
+    print(f"{len(lasting)} recipes failing, {len(warnings)} warnings")
+elif not failed and issue and issue["state"] == "open":
+    # Closed only when nothing fails at all: a recipe failing for the first time
+    # keeps it open until the next build tells.
+    api("POST", f"/issues/{issue['number']}/comments", {"body": "All recipes build again."})
+    api("PATCH", f"/issues/{issue['number']}", {"state": "closed"})
+    print("closed")
 else:
-    for i in open_issues:
-        api("POST", f"/issues/{i['number']}/comments", {"body": "All recipes build again."})
-        api("PATCH", f"/issues/{i['number']}", {"state": "closed"})
-    print("no recipes failing")
+    print("nothing to report")

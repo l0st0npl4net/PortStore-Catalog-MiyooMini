@@ -12,6 +12,8 @@ pub struct Member {
     pub size: u64,
     pub dir: bool,
     pub link: bool,
+    /// Zip only: encrypted (refused when it is to be read, not when it is left out).
+    pub encrypted: bool,
     /// Zip only: where the member's local header starts, how it is stored, its CRC-32.
     at: u64,
     method: u16,
@@ -48,28 +50,30 @@ pub fn members(path: &Path, kind: &str) -> io::Result<Vec<Member>> {
     }
 }
 
-/// Hand every file member (not links), with a reader of its bytes, to `each`, in
-/// archive order.
+/// Hand every file member (not links) that `want` takes, with a reader of its bytes,
+/// to `each`, in archive order. Members left out are not read: a PC tool compressed
+/// in a way Port Store does not read, beside the port, does not stop the install.
 pub fn extract(
     path: &Path,
     kind: &str,
+    want: impl Fn(&Member) -> bool,
     mut each: impl FnMut(&Member, &mut dyn Read) -> io::Result<()>,
 ) -> io::Result<()> {
     match kind {
         "zip" => {
             let mut file = fs::File::open(path)?;
             let members = zip_members(&mut file)?;
-            for m in members.iter().filter(|m| !m.dir && !m.link) {
+            for m in members.iter().filter(|m| !m.dir && !m.link && want(m)) {
                 zip_read(&mut file, m, &mut each)?;
             }
             Ok(())
         }
-        "tar" | "tar.gz" => tar_walk(path, kind, |m, r| match m.dir || m.link {
+        "tar" | "tar.gz" => tar_walk(path, kind, |m, r| match m.dir || m.link || !want(m) {
             true => Ok(()),
             false => each(m, r),
         }),
         "dir" => {
-            for m in dir_members(path)?.iter().filter(|m| !m.dir && !m.link) {
+            for m in dir_members(path)?.iter().filter(|m| !m.dir && !m.link && want(m)) {
                 each(m, &mut fs::File::open(path.join(&m.name))?)?;
             }
             Ok(())
@@ -93,6 +97,7 @@ fn dir_members(root: &Path) -> io::Result<Vec<Member>> {
                 size: if meta.is_file() { meta.len() } else { 0 },
                 dir,
                 link: meta.file_type().is_symlink(),
+                encrypted: false,
                 at: 0,
                 method: 0,
                 crc: 0,
@@ -192,14 +197,11 @@ fn zip_members(file: &mut fs::File) -> io::Result<Vec<Member>> {
         if name_at + name_len > dir.len() {
             return Err(bad("broken zip directory"));
         }
-        let mut name = String::from_utf8_lossy(&dir[name_at..name_at + name_len]).into_owned();
+        let mut name = zip_name(&dir[name_at..name_at + name_len], flags & 0x800 != 0);
         // Zips made on Windows may separate folders with backslashes; unzip reads
         // them as slashes.
         if made_by == 0 {
             name = name.replace('\\', "/");
-        }
-        if flags & 1 != 0 {
-            return Err(bad(format!("encrypted member: {name}")));
         }
         if size == 0xffff_ffff || packed == 0xffff_ffff || local == 0xffff_ffff {
             return Err(bad("zip64 archives are not read"));
@@ -212,6 +214,7 @@ fn zip_members(file: &mut fs::File) -> io::Result<Vec<Member>> {
             size,
             dir: dir_entry,
             link,
+            encrypted: flags & 1 != 0,
             at: local,
             method,
             crc,
@@ -222,11 +225,49 @@ fn zip_members(file: &mut fs::File) -> io::Result<Vec<Member>> {
     Ok(out)
 }
 
+/// A zip member's name: UTF-8 when flagged so; otherwise UTF-8 when it is valid (as
+/// most tools write it without the flag), else code page 437, as Python's zipfile
+/// (and so index/build.py) reads it.
+pub fn zip_name(bytes: &[u8], utf8: bool) -> String {
+    if utf8 {
+        return String::from_utf8_lossy(bytes).into_owned();
+    }
+    match std::str::from_utf8(bytes) {
+        Ok(text) => text.to_string(),
+        Err(_) => bytes
+            .iter()
+            .map(|&b| if b < 0x80 { b as char } else { CP437_HIGH[(b - 0x80) as usize] })
+            .collect(),
+    }
+}
+
+const CP437_HIGH: [char; 128] = [
+    'Ç', 'ü', 'é', 'â', 'ä', 'à', 'å', 'ç',
+    'ê', 'ë', 'è', 'ï', 'î', 'ì', 'Ä', 'Å',
+    'É', 'æ', 'Æ', 'ô', 'ö', 'ò', 'û', 'ù',
+    'ÿ', 'Ö', 'Ü', '¢', '£', '¥', '₧', 'ƒ',
+    'á', 'í', 'ó', 'ú', 'ñ', 'Ñ', 'ª', 'º',
+    '¿', '⌐', '¬', '½', '¼', '¡', '«', '»',
+    '░', '▒', '▓', '│', '┤', '╡', '╢', '╖',
+    '╕', '╣', '║', '╗', '╝', '╜', '╛', '┐',
+    '└', '┴', '┬', '├', '─', '┼', '╞', '╟',
+    '╚', '╔', '╩', '╦', '╠', '═', '╬', '╧',
+    '╨', '╤', '╥', '╙', '╘', '╒', '╓', '╫',
+    '╪', '┘', '┌', '█', '▄', '▌', '▐', '▀',
+    'α', 'ß', 'Γ', 'π', 'Σ', 'σ', 'µ', 'τ',
+    'Φ', 'Θ', 'Ω', 'δ', '∞', 'φ', 'ε', '∩',
+    '≡', '±', '≥', '≤', '⌠', '⌡', '÷', '≈',
+    '°', '∙', '·', '√', 'ⁿ', '²', '■', '\u{a0}',
+];
+
 fn zip_read(
     file: &mut fs::File,
     m: &Member,
     each: &mut impl FnMut(&Member, &mut dyn Read) -> io::Result<()>,
 ) -> io::Result<()> {
+    if m.encrypted {
+        return Err(bad(format!("{}: encrypted", m.name)));
+    }
     file.seek(SeekFrom::Start(m.at))?;
     let mut head = [0u8; 30];
     file.read_exact(&mut head)?;
@@ -347,6 +388,7 @@ fn tar_walk(
                         size: if dir { 0 } else { size },
                         dir,
                         link: false,
+                        encrypted: false,
                         at: 0,
                         method: 0,
                         crc: 0,
@@ -355,6 +397,9 @@ fn tar_walk(
                     each(&m, &mut body)?;
                 }
                 io::copy(&mut body, &mut io::sink())?;
+                if body.limit() > 0 {
+                    return Err(bad("tar cut short"));
+                }
             }
             b'1' | b'2' => {
                 let m = Member {
@@ -362,6 +407,7 @@ fn tar_walk(
                     size: 0,
                     dir: false,
                     link: true,
+                    encrypted: false,
                     at: 0,
                     method: 0,
                     crc: 0,
@@ -370,8 +416,10 @@ fn tar_walk(
                 each(&m, &mut io::empty())?;
                 io::copy(&mut body, &mut io::sink())?;
             }
-            // Devices, fifos and the like: not for an SD card.
+            // Devices, fifos and the like: not for an SD card. A long name before
+            // one is its own, not the next file's.
             _ => {
+                long_name = None;
                 io::copy(&mut body, &mut io::sink())?;
             }
         }

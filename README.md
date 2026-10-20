@@ -7,19 +7,20 @@ Install, update and remove ports right on a Miyoo Mini, Mini Plus, Mini v4 or Mi
 
 - **62 ports and apps**, including all 12 native N64 games of
   [Miyoo64](https://github.com/mr-finster/miyoo64) (Mario Kart 64, Super Mario 64, Ocarina
-  of Time, GoldenEye 007…), Undertale, Fallout 1 and 2, Half-Life, Tomb Raider and apps
-  like Moonlight, Syncthing or Better WiFi.
-- **Games** and **Apps** tabs, genres (Select), pictures, and an **Updates** tab when a port's
-  author publishes a new version.
-- Games go to their own system, **Games → MiyooPorts**, next to your consoles, whatever
-  way their authors packed them. Apps stay in Apps.
-- For games that need your own files (a ROM, the game's data) Port Store says what to put
-  where and checks it: N64 ROMs are recognised by checksum, in any byte order. Or copy the
-  files from your computer into `App/PortStore/import` as they are, and Port Store moves them
-  where the port wants them.
-- The number of updates shows under Port Store's name in Apps.
+  of Time, GoldenEye 007…), Undertale, Fallout 1 and 2, Half-Life, Tomb Raider, OpenRCT2 and
+  apps like Moonlight, Syncthing or Better WiFi.
+- **Games** and **Apps** tabs, genres, pictures, newest first; install several ports at once.
+- Games go to their own system, **Games → MiyooPorts**, next to your consoles.
+- **Updates** of the ports, and of Port Store itself, are offered as soon as their authors
+  publish them; the number of updates shows under Port Store's name in Apps.
+- Games that need **your own files** (a ROM, the game's data) say what to put where; copy them
+  into one folder as they are and Port Store puts them in place.
+- Works **without Wi-Fi** too, with files brought on a computer.
 - Everything is downloaded from the authors' own GitHub releases and checked against the
   catalog's SHA-256. Port Store hosts no games.
+- Safe with your card: files are unpacked and checked before anything is put in place, and
+  updates and removals touch only what Port Store put there: never saves, settings, your game
+  files or another port's files.
 
 ## Install
 
@@ -30,15 +31,82 @@ Install, update and remove ports right on a Miyoo Mini, Mini Plus, Mini v4 or Mi
 3. On the Mini: **Apps → Port Store**.
 
 Needs Wi-Fi (Mini Plus, Mini Flip) and the right date and time (Clock app) for secure
-downloads. On the Mini v4 and Flip, Port Store uses the whole 752×560 screen (not yet tried on
-those devices: reports welcome).
+downloads; without Wi-Fi, see [below](#without-wi-fi). On the Mini v4 and Flip, Port Store uses
+the whole 752×560 screen (not yet tried on those devices: reports welcome).
 
-**Mini without Wi-Fi** (or Wi-Fi off): Port Store works with files brought on a computer,
-through the folder `App/PortStore/downloads` on the card. See
-[Without Wi-Fi](#without-wi-fi) below.
+**Already have Port Store?** It updates itself (see [Updates](#updates)). Port Store 0.3.0 or
+0.4.0 put on the card by unzipping a release does not see its own updates: unzip the newest
+release over it once.
 
-Many ports start through OnionOS's *Ports Collection*: Port Store adds it by itself when a
-game needs it (as Package Manager would). Its own Ports entry keeps OnionOS's games.
+## Use
+
+| Button | |
+|---|---|
+| D-pad | move; Left / Right: a page |
+| L1 / R1 | tabs: Games, Apps, Installed, Updates, More |
+| A | open a port; on its page: install, update or reinstall |
+| X | list: mark a port (Start installs the marked ones); page: remove |
+| Start | list: install the marked ports, one after another; page: move your files found in `import` into place |
+| Select | Games: next genre; Updates: update all |
+| R2 | newest releases first / A to Z |
+| Y | list: download the newest catalog again; page: check your files again |
+| B | back; on the list: quit |
+
+- **Games** lists the games, collections such as Miyoo64 under their own heading; **Apps** the
+  apps; **Installed** what Port Store installed; **More** ports Port Store cannot install yet,
+  with a link to their page.
+- A port's page shows its picture, version, size, what it is, and what you bring for it, checked
+  on the card: ✓ found, ✗ missing, ! another version of the game's ROM.
+- **Several at once:** mark ports with X in the list, then Start installs them one after
+  another, and tells at the end what was installed, what not and why.
+- **Removing** a port takes away the files Port Store put on the card. Your saves, settings and
+  game files stay.
+
+## MiyooPorts
+
+Games installed by Port Store are in **Games → MiyooPorts**, a system of their own next to your
+consoles, with its own icon (an icon pack can bring its own `miyooports.png`):
+
+- every game is there, whatever way its author packed it: for OnionOS's Ports, or as an app
+  (Minecraft, Petals); **Apps keeps only apps**;
+- each game once: the releases' own Ports shortcuts are kept out of sight, and OnionOS's
+  **Ports** entry keeps its own games;
+- a game that needs your files shows right away; started without them, it says what is missing
+  and where it goes;
+- ports that start through OnionOS's *Ports Collection* get it added by themselves (as Package
+  Manager would).
+
+Games installed with Port Store 0.3 move from Ports and Apps into MiyooPorts at the first start
+of a newer Port Store; saves and game files stay where they are.
+
+## Your game files
+
+![Files found in import](docs/screenshots/files.png)
+
+Ports like Undertale, Fallout, Half-Life, Captain Claw or OpenRCT2 need files from your own copy
+of the game, and the Miyoo64 games a ROM.
+
+1. Copy them from your computer into **`App/PortStore/import`** on the card, as they are: whole
+   folders ("Undertale (Windows)", "RollerCoaster Tycoon 2", Half-Life's folder with `valve` in
+   it), N64 ROMs loose (`.z64`, `.v64`, `.n64`, any name).
+2. Open the port's page in Port Store: under "You bring" it says what it found in `import` and
+   where it goes.
+3. Press **Start**: the files are moved into place (on the card itself, so even big games are
+   quick), and the page shows them as found.
+
+A ROM is told by its checksum, so only the version the port is made for is taken. You can also
+put the files in place yourself: the page says where (Y checks again).
+
+## Updates
+
+- The catalog is built again every day from the ports' releases, and Port Store downloads it
+  each time it starts. A port with a newer release shows in the **Updates** tab; **Select**
+  there updates them all.
+- The number of updates shows under Port Store's name in **Apps** (after Port Store has run
+  once since they came out).
+- A new **Port Store** is offered as soon as it starts: it updates itself and starts again.
+- An update replaces the port's files and removes those the new version dropped. Saves,
+  settings and your game files stay.
 
 ## Without Wi-Fi
 
@@ -68,40 +136,18 @@ lists what changed; Select there, then the files it asks for.
 
 Files stay in `downloads` after installing: delete them to free space.
 
-## Use
+## Troubleshooting
 
-| Button | |
-|---|---|
-| D-pad | move; Left / Right: a page |
-| L1 / R1 | tabs: Games, Apps, Installed, Updates, More |
-| A | open a port; on its page: install, update or reinstall |
-| X | list: mark a port (Start installs the marked ones); page: remove |
-| Start | list: install the marked ports, one after another; page: move your files found in `import` into place |
-| Select | Games: next genre; Updates: update all |
-| R2 | newest releases first / A to Z |
-| Y | list: download the newest catalog again; page: check your files again |
-| B | back; on the list: quit |
-
-- **More** lists ports Port Store cannot install yet, with a link to their page.
-- Removing a port takes away the files Port Store put on the card. Your saves, settings and
-  game files stay.
-- The catalog is downloaded each time Port Store starts. When a new Port Store is out, it
-  offers to update itself at once and starts again by itself.
-
-Troubleshooting: Port Store writes `App/PortStore/cache/portstore.log`; OnionOS's import of
-ports writes `Roms/PORTS/import.log`.
-
-## Your game files
-
-Ports like Undertale, Fallout, Half-Life or OpenRCT2 need files from your own copy of the game.
-Copy them from your computer into `App/PortStore/import` on the card as they are, whole
-folders too ("Undertale (Windows)", "RollerCoaster Tycoon 2"…), and N64 ROMs for Miyoo64. On
-the port's page Port Store says what it found there and where it goes; Start moves it into
-place.
+- Port Store writes `App/PortStore/cache/portstore.log`; OnionOS's import of ports writes
+  `Roms/PORTS/import.log`.
+- "The secure connection failed": check the date and time (Clock app).
+- The footer says "offline": the catalog could not be downloaded (Wi-Fi off or out of reach);
+  Port Store works with the catalog it has.
 
 ## Adding a port
 
-See [CONTRIBUTING.md](CONTRIBUTING.md): a recipe in a pull request, checked automatically.
+A port gets in with a recipe in a pull request, checked automatically: see
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Thanks
 

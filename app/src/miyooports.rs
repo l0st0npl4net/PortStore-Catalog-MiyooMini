@@ -74,7 +74,9 @@ pub fn file_name(name: &str) -> String {
         .chars()
         .map(|c| if matches!(c, '/' | '\\' | '"' | ':' | '*' | '?' | '<' | '>' | '|' | '$' | '`') { ' ' } else { c })
         .collect();
-    clean.split_whitespace().collect::<Vec<_>>().join(" ")
+    let clean: String = clean.chars().filter(|c| !c.is_control()).collect();
+    // A leading dot would hide the game from MainUI's lists.
+    clean.split_whitespace().collect::<Vec<_>>().join(" ").trim_start_matches('.').trim_start().to_string()
 }
 
 enum Start {
@@ -86,7 +88,16 @@ enum Start {
 
 /// The launchers (and their pictures) MiyooPorts gets for `port`, installed as
 /// `files`: (path, bytes). Apps get none.
-pub fn launchers(root: &Path, home: &Path, port: &Port, files: &[String], apps: &[AppLaunch]) -> Vec<(String, Vec<u8>)> {
+/// `taken`: the files of other installed ports (in any case): a launcher of the same
+/// name gets the port's id after its name, so neither overwrites the other.
+pub fn launchers(
+    root: &Path,
+    home: &Path,
+    port: &Port,
+    files: &[String],
+    apps: &[AppLaunch],
+    taken: &std::collections::BTreeSet<String>,
+) -> Vec<(String, Vec<u8>)> {
     if port.is_app() {
         return Vec::new();
     }
@@ -124,12 +135,17 @@ pub fn launchers(root: &Path, home: &Path, port: &Port, files: &[String], apps: 
 
     let mut out = Vec::new();
     for (name, start, image) in starts {
-        let name = file_name(&name);
+        let mut name = file_name(&name);
+        if taken.contains(&crate::install::fold(&format!("{DIR}/{name}.sh"))) {
+            name = file_name(&format!("{name} ({})", port.id));
+        }
         if name.is_empty() || out.iter().any(|(p, _): &(String, Vec<u8>)| p == &format!("{DIR}/{name}.sh")) {
             continue;
         }
         out.push((format!("{DIR}/{name}.sh"), script(port, &name, &start).into_bytes()));
         // The picture: the release's own for Ports, else the catalog's.
+        // The picture: the release's own for Ports, else the catalog's, else the one
+        // already there (a new catalog's picture not downloaded yet).
         let picture = image
             .and_then(|i| fs::read(root.join(i)).ok())
             .or_else(|| {
@@ -137,7 +153,8 @@ pub fn launchers(root: &Path, home: &Path, port: &Port, files: &[String], apps: 
                     .into_iter()
                     .filter(|_| !port.cover.is_empty())
                     .find_map(|p| fs::read(p).ok())
-            });
+            })
+            .or_else(|| fs::read(root.join(format!("{DIR}/Imgs/{name}.png"))).ok());
         if let Some(png) = picture {
             out.push((format!("{DIR}/Imgs/{name}.png"), png));
         }
@@ -152,10 +169,12 @@ fn quoted(text: &str) -> String {
 /// The launcher: first what the game needs from the user (said on screen when
 /// missing), then the game.
 fn script(port: &Port, name: &str, start: &Start) -> String {
+    // A comment line: nothing in it may end it.
+    let plain = |t: &str| t.chars().filter(|c| !c.is_control()).collect::<String>();
     let mut s = format!(
         "#!/bin/sh\n# {name}: made by Port Store for MiyooPorts ({id} {version}).\ncard=/mnt/SDCARD\n",
-        id = port.id,
-        version = port.version
+        id = plain(&port.id),
+        version = plain(&port.version)
     );
     for need in port.needs.iter().filter(|n| !n.check.is_empty()) {
         // As OnionOS's ~Import ports: the file, or one of its name (any case) up to

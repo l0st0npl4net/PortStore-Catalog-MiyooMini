@@ -27,9 +27,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          changed=$(git diff --name-only --diff-filter=AM "origin/${{ github.base_ref }}...HEAD" -- 'recipes/*.json' 'recipes/**/*.json')
+          # Renamed recipes count as added (--no-renames); names may hold spaces (-z).
           set +e
-          python3 index/check_recipes.py $changed > report.md
+          git diff -z --no-renames --name-only --diff-filter=AM "origin/${{ github.base_ref }}...HEAD" \
+            -- 'recipes/*.json' 'recipes/**/*.json' | xargs -0 python3 index/check_recipes.py > report.md
           status=$?
           set -e
           cat report.md >> "$GITHUB_STEP_SUMMARY"

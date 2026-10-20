@@ -34,16 +34,42 @@ pub fn size(bytes: u64) -> String {
     }
 }
 
-/// Whether release `version` (of `date`) is newer than the one installed: by the
-/// numbers in the versions when both have some ("v0.3.0", "release1.5.1"), else by
-/// date, else just by being another.
+/// A version as compared: the first run of numbers and dots ("v1.2.0-rc2" → 1.2.0,
+/// "release1.5.1" → 1.5.1) with trailing zeros dropped (1.2 = 1.2.0), and what follows
+/// it when that marks a pre-release ("-rc2", "beta1"), which comes before the bare
+/// numbers.
+fn version_key(v: &str) -> Option<(Vec<u64>, Option<String>)> {
+    let start = v.find(|c: char| c.is_ascii_digit())?;
+    let run: String = v[start..].chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+    let mut numbers: Vec<u64> = run.split('.').filter(|n| !n.is_empty()).filter_map(|n| n.parse().ok()).collect();
+    while numbers.len() > 1 && numbers.last() == Some(&0) {
+        numbers.pop();
+    }
+    let rest = v[start + run.len()..].trim_start_matches(['-', '_', '.', '+']).to_ascii_lowercase();
+    let pre = ["alpha", "beta", "rc", "pre", "dev", "a", "b"]
+        .iter()
+        .any(|p| rest.starts_with(p) && rest[p.len()..].chars().next().is_none_or(|c| !c.is_ascii_alphabetic()));
+    Some((numbers, pre.then_some(rest)))
+}
+
+/// Whether release `version` (of `date`) is newer than the one installed: by their
+/// numbers when both have numbers of the same kind (not a date-like 2024 against a
+/// 2), else by the release dates, else just by being another.
 pub fn newer(version: &str, date: &str, installed: &str, installed_date: &str) -> bool {
-    let numbers = |v: &str| -> Vec<u64> {
-        v.split(|c: char| !c.is_ascii_digit()).filter_map(|n| n.parse().ok()).collect()
-    };
-    let (a, b) = (numbers(version), numbers(installed));
-    if !a.is_empty() && !b.is_empty() && a != b {
-        return a > b;
+    if let (Some((a, pa)), Some((b, pb))) = (version_key(version), version_key(installed)) {
+        let year = |n: &[u64]| n.first().is_some_and(|&x| x >= 1000);
+        if year(&a) == year(&b) {
+            if a != b {
+                return a > b;
+            }
+            match (&pa, &pb) {
+                (None, Some(_)) => return true,
+                (Some(_), None) => return false,
+                (Some(x), Some(y)) if x != y => return x > y,
+                // The same version ("1.2" and "v1.2.0"): newer only if released later.
+                _ => return !date.is_empty() && !installed_date.is_empty() && date > installed_date,
+            }
+        }
     }
     if !date.is_empty() && !installed_date.is_empty() && date != installed_date {
         return date > installed_date;
@@ -125,12 +151,24 @@ impl Store {
         // it came onto the card (an unzipped release has no install record).
         if port.id == SELF_ID {
             let me = format!("v{}", env!("CARGO_PKG_VERSION"));
-            return match newer(&port.version, "", &me, "") {
+            // By numbers only: "0.5.0" and "v0.5.0" are one version.
+            let same = version_key(&port.version).map(|k| k.0) == version_key(&me).map(|k| k.0)
+                && version_key(&port.version).and_then(|k| k.1).is_none();
+            return match !same && newer(&port.version, "", &me, "") {
                 true => State::Update(me),
                 false => State::Installed(me),
             };
         }
         match self.card.installed(&port.id) {
+            // The same tag, its file uploaded again (another checksum, a newer date).
+            Some(rec)
+                if rec.version == port.version
+                    && !rec.sha256.is_empty()
+                    && rec.sha256 != port.file.sha256
+                    && port.date > rec.date =>
+            {
+                State::Update(rec.version)
+            }
             Some(rec) if rec.version == port.version => State::Installed(rec.version),
             // Newer than the catalog's (a Port Store ahead of its catalog): no update.
             Some(rec) if !newer(&port.version, &port.date, &rec.version, &rec.date) => {
@@ -154,7 +192,10 @@ impl Store {
         }
         let to = self.card.home.join("cache").join("index.json");
         fs::create_dir_all(to.parent().unwrap()).map_err(|e| e.to_string())?;
-        let new = fetch::part_of(&to).with_extension("new");
+        // A name of its own per download: the one on start and a Y can overlap.
+        static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let new = to.with_extension(format!("json.new{n}"));
         let _ = fs::remove_file(fetch::part_of(&new));
         self.fetcher
             .get(&self.index_url, &new, cancel, &mut |_| {})
@@ -168,13 +209,20 @@ impl Store {
                 }
                 _ => e.to_string(),
             })?;
-        let text = fs::read_to_string(&new).map_err(|e| e.to_string())?;
-        let index = Index::parse(&text)?;
-        fs::rename(&new, &to).map_err(|e| e.to_string())?;
-        Ok(index)
+        let text = fs::read_to_string(&new).map_err(|e| e.to_string());
+        let index = text.and_then(|t| Index::parse(&t));
+        match &index {
+            Ok(_) => fs::rename(&new, &to).map_err(|e| e.to_string())?,
+            Err(_) => {
+                let _ = fs::remove_file(&new);
+            }
+        }
+        index
     }
 
     /// The port's release file, checked: one put in downloads/ by hand, or downloaded.
+    /// Downloads are kept by checksum (cache/<sha>-<name>), so a leftover of another
+    /// release of the same name is never taken or resumed.
     fn release_file(
         &self,
         port: &Port,
@@ -190,38 +238,56 @@ impl Store {
             if fetch::sha256_file(&by_hand, cancel)? == port.file.sha256 {
                 return Ok((by_hand, true));
             }
+            // Not the catalog's file (an older release of the same name): set aside,
+            // so it is not taken again and the list for a computer asks for the right one.
+            let mut aside = by_hand.clone().into_os_string();
+            aside.push(".wrong");
+            let _ = fs::rename(&by_hand, aside);
         }
-        let path = self.card.home.join("cache").join(name);
+        let short = port.file.sha256.get(..12).unwrap_or("x");
+        let path = self.card.home.join("cache").join(format!("{short}-{}", name.to_string_lossy()));
         fs::create_dir_all(path.parent().unwrap())?;
-        if !path.exists() {
-            let total = port.file.size;
-            progress(Step::Download { done: 0, total });
-            let got = self.fetcher.get(&port.file.url, &path, cancel, &mut |done| {
-                progress(Step::Download { done, total })
-            });
-            if let Err(e) = got {
-                if e.kind() == io::ErrorKind::NotConnected {
-                    self.list_for_computer(&[port]);
-                    return Err(io::Error::new(
-                        e.kind(),
-                        format!(
-                            "No connection. The file is listed in App/PortStore/downloads/{TO_DOWNLOAD}: \
-                             download it on a computer into that folder, then install again."
-                        ),
-                    ));
+        // A part as long as the file, or longer, is no part of it.
+        let part = fetch::part_of(&path);
+        if fs::metadata(&part).is_ok_and(|m| port.file.size > 0 && m.len() >= port.file.size) {
+            let _ = fs::remove_file(&part);
+        }
+        for attempt in 0..2 {
+            if !path.exists() {
+                let total = port.file.size;
+                progress(Step::Download { done: 0, total });
+                let got = self.fetcher.get(&port.file.url, &path, cancel, &mut |done| {
+                    progress(Step::Download { done, total })
+                });
+                if let Err(e) = got {
+                    if e.kind() == io::ErrorKind::NotConnected {
+                        self.list_for_computer(&[port]);
+                        return Err(io::Error::new(
+                            e.kind(),
+                            format!(
+                                "No connection. The file is listed in App/PortStore/downloads/{TO_DOWNLOAD}: \
+                                 download it on a computer into that folder, then install again."
+                            ),
+                        ));
+                    }
+                    return Err(e);
                 }
-                return Err(e);
+            }
+            progress(Step::Check);
+            if fetch::sha256_file(&path, cancel)? == port.file.sha256 {
+                return Ok((path, false));
+            }
+            let _ = fs::remove_file(&path);
+            // Once more from nothing (a resumed part that did not fit), then give up.
+            if attempt == 1 {
+                break;
             }
         }
-        progress(Step::Check);
-        if fetch::sha256_file(&path, cancel)? != port.file.sha256 {
-            let _ = fs::remove_file(&path);
-            return Err(io::Error::other(
-                "the downloaded file is not the one in the catalog (checksum differs); \
-                 refresh the catalog and try again",
-            ));
-        }
-        Ok((path, false))
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "the downloaded file is not the one in the catalog (checksum differs): \
+             its author may have replaced it; the catalog catches up within a day",
+        ))
     }
 
     /// Add the release files of `ports` to downloads/to-download.txt, the list for a
@@ -268,7 +334,10 @@ impl Store {
     ) -> io::Result<Installed> {
         let (file, by_hand) = self.release_file(port, cancel, progress)?;
         let rec = self.card.install(port, &file, progress);
-        if !by_hand {
+        // Kept for another try after an error of the card (no space left), not after
+        // a broken archive.
+        let keep_file = rec.as_ref().is_err_and(|e| e.kind() != io::ErrorKind::InvalidData);
+        if !by_hand && !keep_file {
             let _ = fs::remove_file(&file);
         }
         let rec = rec?;
@@ -284,6 +353,9 @@ impl Store {
     }
 
     pub fn remove(&self, id: &str, port: Option<&Port>) -> io::Result<Installed> {
+        if id == SELF_ID {
+            return Err(io::Error::other("Port Store does not remove itself: delete App/PortStore on a computer"));
+        }
         self.card.remove(id, port)
     }
 
@@ -338,7 +410,11 @@ impl Store {
         let Some(map) = json.as_object_mut() else { return };
         map.insert("description".into(), line.into());
         if let Ok(out) = serde_json::to_string_pretty(&json) {
-            let _ = fs::write(&path, out + "\n");
+            // Whole or not at all: a half-written config.json takes Port Store out of Apps.
+            let tmp = path.with_extension("json.part");
+            if fs::write(&tmp, out + "\n").is_ok() && fs::rename(&tmp, &path).is_ok() {
+                unsafe { libc::sync() };
+            }
         }
     }
 

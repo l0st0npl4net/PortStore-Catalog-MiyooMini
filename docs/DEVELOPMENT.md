@@ -29,7 +29,6 @@ Port Store hosts no ports: only the catalog and its pictures are on GitHub Pages
 |---|---|
 | `recipes/miyoo64/`, `recipes/ports/` | recipes; `recipes/portstore.json` is Port Store itself |
 | `index/build.py` | the catalog builder (Python 3, standard library; Pillow for pictures, py7zr for 7z) |
-| `index/prune_cache.py` | drops cached release files the catalog no longer names |
 | `index/report.py` | keeps the "Recipes failing" issue up to date (CI only) |
 | `index/check_recipes.py` | checks and builds given recipes, reports in Markdown (pull requests) |
 | `.github/workflows/index.yml` | builds and publishes the catalog |
@@ -39,6 +38,7 @@ Port Store hosts no ports: only the catalog and its pictures are on GitHub Pages
 | `app/dist/` | files packaged with Port Store: `launch.sh`, OnionOS app `config.json`, the MiyooPorts system |
 | `assets/` | font (DejaVu Sans), Port Store and MiyooPorts icons |
 | `tools/package.sh`, `tools/release.sh` | build Port Store for the Mini, as a card folder or a release zip |
+| `tools/fetch_catalog.py` | puts the published catalog and its pictures into a folder (bundled with a release) |
 | `tools/icon.py`, `tools/crate_licenses.py` | Port Store's icon; the list of Rust crates and licenses |
 | `docs/releases/` | release notes, one file per version, pasted into GitHub releases |
 | `site/` (not in git) | a locally built catalog; `tools/package.sh` bundles it |
@@ -52,7 +52,7 @@ Port Store hosts no ports: only the catalog and its pictures are on GitHub Pages
 - every day at 03:17 UTC (`schedule`), so new releases of the ports reach the devices;
 - on a push to `main` that changes `recipes/`, `index/` or the workflow itself;
 - by hand: Actions → index → Run workflow (`workflow_dispatch`);
-- when a Port Store release is published: `release.yml` starts it with
+- when a Port Store release is published or edited (a file attached later): `release.yml` starts it with
   `gh workflow run index.yml --ref main`. It is started that way, not by a `release` trigger in
   `index.yml`, because GitHub Pages deploys only from `main`: a run started by a release would
   run on the tag and be refused by the Pages environment.
@@ -64,31 +64,40 @@ Port Store hosts no ports: only the catalog and its pictures are on GitHub Pages
    unchanged releases are not downloaded again (and the authors' download counts are not
    inflated).
 3. `index/build.py --out site/index.json --cache .cache --previous <published index.json>`.
-4. `index/prune_cache.py`: only the files the new catalog names stay in the cache.
-5. `index/report.py`: opens, updates or closes the issue "Recipes failing" (label
-   `recipe-failure`). A recipe is reported when it failed in this build and the one before, so a
-   host down for a minute does not open issues. The issue closes by itself once all build.
-6. Uploads `site/` (index and pictures) and deploys it to GitHub Pages.
+   The previous index is tried three times; when it cannot be had (but exists), the build
+   stops rather than publish a catalog without the ports failing now. Only the release files
+   this build used stay in the cache.
+4. `index/report.py`: keeps one issue "Recipes failing" (label `recipe-failure`) up to date:
+   recipes that failed in this build and the one before (a host down for a minute opens
+   nothing), and warnings (a newer release passed over because it has no file matching
+   `asset`). The last such issue is reopened rather than a new one made; it is closed once
+   nothing fails.
+5. Uploads `site/` (index and pictures) and deploys it to GitHub Pages.
 
-Repository settings it needs: **Settings → Pages → Source: GitHub Actions**. The workflow
-permissions (`contents: read`, `issues: write`, `pages: write`, `id-token: write`;
-`actions: write` in `release.yml`) are in the files; the only secret is the automatic
-`GITHUB_TOKEN`.
+Repository settings it needs: **Settings → Pages → Source: GitHub Actions**. Permissions are
+per job: the build, which reads untrusted archives, gets `contents: read` and `issues: write`;
+the deploy gets `pages: write` and `id-token: write`; `release.yml` gets `actions: write`. The
+only secret is the automatic `GITHUB_TOKEN`.
 
 ### What `build.py` does, per recipe
 
 1. **Release:** the newest release of `github` whose file matches `asset` (and tag matches
    `tag`; pre-releases only with `prerelease`). With `GITHUB_TOKEN` through the GitHub API
-   (5000 requests an hour); without it from github.com's own pages (`releases.atom` and
+   (1000 requests an hour for the repository's token in Actions); without it from github.com's own pages (`releases.atom` and
    `expanded_assets`), as the API allows only 60 requests an hour without a token.
-2. **File:** downloaded into the cache, SHA-256 computed, checked against GitHub's own
-   digest when GitHub gives one (only files uploaded since mid-2025 have it). Its kind is told
-   by its first bytes (zip, tar, tar.gz, 7z), not by its name.
+2. **File:** downloaded into the cache (named by GitHub's asset id and upload time, so a
+   file uploaded again under the same name is downloaded again; its length is checked, and
+   files over 2 GB refused), SHA-256 computed, checked against GitHub's own digest when GitHub
+   gives one (only files uploaded since mid-2025 have it; a mismatch is downloaded once more).
+   Its kind is told by its first bytes (zip, tar, tar.gz, 7z), not by its name.
 3. **Layout** (`plan`): members past `strip` (by default a single wrapper folder) go where
    `into`, `map` or `take` say, minus `skip`. Only what goes onto the card is checked for unsafe
-   paths and links. Nothing taken: the recipe fails. Zips made on Windows have their
-   backslashes read as folders. `target` in `build.py` and `install::target` in the app must
-   stay the same.
+   paths and links, and for what the device cannot read: zip members encrypted, compressed
+   other than stored or deflate, or with a NUL in the name (left-out members may be anything).
+   Nothing taken: the recipe fails. Zip names are read as the device reads them (UTF-8 when
+   flagged or valid, else code page 437; Windows backslashes as folders); 7z links are told
+   apart. `target`/`dos_name` in `build.py` and `install::target`/`archive::zip_name` in the
+   app must stay the same.
 4. **Needs:** the recipe's, plus the checks OnionOS's `~Import ports` would make: each Ports
    shortcut's `GameDir` + `GameDataFile` that the release does not bring.
 5. **Pictures:** the release's own (OnionOS `Roms/PORTS/Imgs`, else an app's `icon.png`), else
@@ -96,8 +105,13 @@ permissions (`contents: read`, `issues: write`, `pages: write`, `id-token: write
    named with a hash of their content so devices never keep a stale one.
 6. **Install facts:** file count and size, `roots` (the port's own folders) and `marks` (one
    file in each: all on the card means the port is there, installed by hand).
+7. **Types:** the entry is checked against the device's types (`check_port`); metadata from
+   MiyooMini-Ports of another type is dropped field by field (`clean_meta`), and its entries
+   under `manual` likewise.
 
-A recipe that fails keeps its entry from the previous catalog (`--previous`), so a renamed
+Whatever a recipe throws (a broken archive, a cut-off download, a wrong field type, an id
+another recipe has too) fails that recipe only, never the build. Members read for shortcuts
+and pictures are refused past 1 MB and 16 MB. A recipe that fails keeps its entry from the previous catalog (`--previous`), so a renamed
 release file does not take a port away from the devices. Catalog entries of
 [Producdevity/MiyooMini-Ports](https://github.com/Producdevity/MiyooMini-Ports) without a recipe
 are listed under `manual` (the More tab).
@@ -105,7 +119,9 @@ are listed under `manual` (the More tab).
 ### `index.json`
 
 `format` (1; Port Store refuses others), `generated` (UTC time; the newest catalog at hand
-wins), `ports`, `manual`, `failed`. A port:
+wins), `ports`, `manual`, `failed`, `warnings`. The device reads each entry on its own: one it
+cannot read, or one with a path leading off the card (absolute, `..`, backslash, an `id` that
+is not a plain name), is left out and logged, the rest of the catalog stands. A port:
 
 | Field | |
 |---|---|
@@ -123,8 +139,8 @@ reading new catalogs; a change older ones cannot read needs `format` 2.
 ### Recipes in pull requests
 
 `recipes.yml` runs `index/check_recipes.py` on the recipe files a pull request adds or
-changes: fields (unknown ones, `id`, `github`, regular expressions, `needs`, `map`), the
-`catalog` name, then the same build as the catalog's (release, download, layout, needs,
+changes (renames included): fields (unknown ones, types, paths on the card, `id` unique across
+all recipes, `github`, regular expressions, `needs`, `map`), the `catalog` name, then the same build as the catalog's (release, download, layout, needs,
 pictures). The report goes to the run's summary and as a comment on the pull request
 (edited on later pushes; pull requests from forks may not comment, the summary is there). The
 check fails when a recipe does.
@@ -135,8 +151,9 @@ check fails when a recipe does.
 2. Write `recipes/ports/<id>.json`: `catalog` (its name in MiyooMini-Ports) or `name`,
    `github`, `asset`. Add `into` / `map` when the layout is not `App/…` or `Roms/PORTS/…`;
    `needs` when the user brings files; `keep` for settings files the release ships.
-3. Build it locally: `python3 index/build.py --only <id> --out /tmp/idx/index.json --cache .cache`
-   (shows the files taken and those left out).
+3. Check it locally: `python3 index/check_recipes.py recipes/ports/<id>.json`, or build it:
+   `python3 index/build.py --only <id> --out /tmp/idx/index.json --cache .cache` (`--only`
+   needs `--out`, so `site/` never holds a partial catalog).
 4. Try it on a card folder (see "Testing" below), then push: the catalog is rebuilt.
 
 ## Port Store (`app/`)
@@ -169,9 +186,14 @@ the Mini v4 and Flip, and the lists get wider and longer. `PORTSTORE_SHOT_SIZE=7
 The screen thread owns `App`: keys, drawing, and messages (`Msg`) from the others through one
 channel. A job (download and install, a queue of them, removal, the catalog) runs on a thread of
 its own and reports progress (`Step`) and its end (`Finished`); B cancels downloads through an
-`AtomicBool`. Checks of a port's needs and the catalog's download on start run on threads too;
-pictures have one thread that downloads them one by one. `Store` is shared (`Arc`); the catalog
-belongs to the screen thread and is replaced whole when a newer one comes.
+`AtomicBool` (only jobs that download offer it). The job runs under `catch_unwind` (the release
+build unwinds), so a panic still ends it with a message and the screen is never left busy.
+Checks of a port's needs and the catalog's download on start run on threads too; each check
+carries a number and only a port's newest one is taken. Pictures have one thread that downloads
+them one by one. `Store` is shared (`Arc`); the catalog belongs to the screen thread and is
+replaced whole when a newer one comes: one downloaded on start while a job runs is held until
+the job is done (its `repair` must not change a port the job is installing). Each catalog
+download writes a file of its own, so the one on start and a Y never clash.
 
 ### On the card
 
@@ -181,11 +203,13 @@ App/PortStore/
   settings.json                       {"index": "<catalog address>"}
   index.json, img/                    the catalog and pictures it was released with
   cacert.pem, licenses/
-  installed/<id>.json                 per port: version, date, every file put on the card
+  installed/<id>.json                 per port: version, date, SHA-256, every file put on
+                                      the card, its keep rules, how it starts
   import/                             game files brought on a computer, in any layout
   downloads/                          release files and index.json brought on a computer;
                                       to-download.txt, what Port Store asks for
-  cache/                              last catalog, pictures, ROM checksums, log, staging
+  cache/                              last catalog, pictures, ROM checksums, log, staging,
+                                      downloads by checksum (<sha>-<name>)
 ```
 
 `launch.sh` runs the program with OnionOS's libraries in `LD_LIBRARY_PATH` (for curl), logs to
@@ -193,21 +217,31 @@ App/PortStore/
 
 ### Installing
 
-1. The file: from `downloads/` when it is there and its SHA-256 matches, else downloaded into
-   `cache/`; a wrong checksum stops everything.
-2. Free space checked; every member that goes onto the card unpacked into
-   `cache/stage-<id>/` (a broken file stops the job before the card is touched).
+1. The file: from `downloads/` when it is there and its SHA-256 matches (one that does not
+   is renamed `.wrong` and asked for again), else downloaded into `cache/<sha>-<name>` (a part
+   as long as the file is dropped; a wrong checksum is downloaded once more from nothing, then
+   stops everything). The download is deleted after the install, or after an archive error;
+   after another error (no space left) it stays for the next try.
+2. Every member that goes onto the card is checked: a safe name, no link, a target path on
+   the card. Members landing on one path in any case (FAT32 tells no case apart) are one file
+   there: the last one's content, the first one's spelling. Free space checked; those members
+   only (others are not even read) unpacked into `cache/stage-<id>/`: a broken file stops the
+   job before the card is touched.
 3. A game's `App/<Name>/config.json` (its entry in Apps) is read for how it starts and not
    installed.
 4. Files moved into place; `keep` files that exist are left. The archive's empty folders made.
+   A move that fails stops the job, and the record then holds everything on the card (the old
+   version's files and the new ones moved), with the old version, or `(incomplete)`: the port
+   is offered again, and Remove still finds all.
 5. MiyooPorts launchers written; `Roms/PORTS/Games` made when Ports Collection is used.
-6. An update removes the files the old version had and the new one has not; files another
-   installed port has are never removed.
+6. An update removes the files the old version had and the new one has not, compared in any
+   case; files another installed port has (in any case) are never removed.
 7. The record written; Ports Collection added when a shortcut needs it.
 
-Removal deletes the recorded files (not `keep` ones, not other ports'), then the folders left
-empty, except shared ones (`App`, `Roms/<System>`, Shortcut categories, MiyooPorts' folders).
-Anything the user put in a port's folders stays.
+Removal deletes the recorded files (not `keep` ones, by the catalog's rules or the record's,
+not other ports', not a path off the card), then the folders left empty, except shared ones
+(`App`, `Roms/<System>`, Shortcut categories, MiyooPorts' folders). Anything the user put in a
+port's folders stays. Port Store never removes itself.
 
 ### MiyooPorts
 
@@ -217,7 +251,9 @@ A system in Games of Port Store's own: `Emu/MiyooPorts/config.json` (`rompath`
 icons by file name). They are written by `miyooports::ensure_system` from files built into the
 program (`app/dist/miyooports/`, `assets/miyooports.png`).
 
-Each game gets `Roms/MiyooPorts/<Name>.sh` and `Roms/MiyooPorts/Imgs/<Name>.png`:
+Each game gets `Roms/MiyooPorts/<Name>.sh` and `Roms/MiyooPorts/Imgs/<Name>.png` (a name
+another installed port's launcher has gets ` (<id>)` after it; a picture stays as it is while
+no new one is at hand):
 
 - **release for Ports Collection:** its `Roms/PORTS/Shortcuts`, `Imgs`, `Manuals` go to
   `Roms/MiyooPorts/.ports/` (MainUI lists no name starting with a dot, so a game shows once);
@@ -240,36 +276,45 @@ MiyooPorts, launchers are made or brought up to date (written only when they dif
 - On start Port Store downloads the catalog quietly (the footer says "offline" when it cannot);
   Y downloads it again. The newest catalog at hand is used: bundled, `cache/index.json` or
   `downloads/index.json`, by `generated`.
-- A port has an update when the catalog's release is newer than the installed one (`newer`:
-  the numbers in the versions when both have some, else the release dates, else just being
-  another); a catalog behind the device offers nothing.
-- Port Store compares itself by its own version (`CARGO_PKG_VERSION`), as it may have come
-  onto the card unzipped, without an install record. When the catalog's Port Store is newer it
-  is offered at once; once installed (over the running program, which keeps running from the
+- A port has an update when the catalog's release is newer than the installed one (`newer`):
+  the first run of numbers in each version ("v1.2.0-rc2" → 1.2.0, trailing zeros dropped, so
+  1.2 = 1.2.0), a pre-release (`-rc2`, `beta`) before the bare numbers; when one is date-like
+  (2024.05.01) and the other not, or neither has numbers, the release dates; else just being
+  another. The same tag with another SHA-256 and a later date (a file uploaded again) is an
+  update too. A catalog behind the device offers nothing.
+- Port Store compares itself by its own version (`CARGO_PKG_VERSION`, numbers only: "0.5.0"
+  and "v0.5.0" are one), as it may have come onto the card unzipped, without an install
+  record. When the catalog's Port Store is newer it is offered once the list is on screen and
+  nothing runs; once installed (over the running program, which keeps running from the
   replaced file), Port Store starts the new one with `exec`. `settings.json` is `keep`.
 
 ### Game files from `import/`
 
 For each missing need, `needs::importable` looks in `import/` (6 levels deep): for a `check`
-path `D/f`, the shallowest file named `f` (any case), found as `X/f`; the contents of `X` go
-into `D`. When `X` and `D` end in the same folder names (any case), both go that many levels
-up, as long as `X` stays a folder of its own in `import/`, so "RollerCoaster Tycoon 2/Data/
-G1.DAT" for `…/OpenRCT2mini/rct2/Data/g1.dat` moves the whole RCT2 folder as `rct2`. A ROM
-need takes a ROM of the right SHA-1, moved into the first `search` folder. `needs::place`
-moves file by file (the user's copy replaces files of the same name) and removes what is left
-of the folder. Recipes should name a file in the game's own layout in `check` (Half-Life:
+path `D/f`, the shallowest file or folder named `f` (any case), found as `X/f`; the contents of
+`X` go into `D`. When `X` and `D` end in the same folder names (any case), both go that many
+levels up, as long as `X` stays a folder of its own in `import/` and `D` never becomes a folder
+the card shares (`Roms/PORTS/Games`, `Roms/<System>`, `App`): so "RollerCoaster Tycoon 2/Data/
+G1.DAT" for `…/OpenRCT2mini/rct2/Data/g1.dat` moves the whole RCT2 folder as `rct2`, and
+"Downloads/Fallout/master.dat" moves only the Fallout folder. A placement inside another's
+folder is dropped (it moves with it). A ROM need takes a ROM of the right SHA-1, moved into the
+first `search` folder under a free name (`mk64 (2).z64` beside another version). `needs::place`
+moves file by file (the user's copy replaces files of the same name, removed only once the move
+can be made), refuses a target off the card, and removes what is left of the folder. Recipes should name a file in the game's own layout in `check` (Half-Life:
 `valve/liblist.gam`), so the folder lands where the port wants it.
 
 ### Updates in Apps
 
 After each look at the catalog, `Store::note_updates` writes the number of updates into Port
 Store's `description` in its `config.json` ("Install and update ports · 3 updates"), which
-MainUI shows under its name in Apps; the file is rewritten only when the line changes, keeping
-keys OnionOS's icon packs set.
+MainUI shows under its name in Apps; the file is rewritten only when the line changes (through
+a temporary file, so a flat battery never leaves it half written), keeping keys OnionOS's icon
+packs set.
 
 ### Without Wi-Fi
 
-When curl reports no connection (codes 6, 7, 28), Port Store writes
+curl gets 20 s to connect and gives up on a transfer stalled for 30 s. When it reports no
+connection (codes 6, 7, 28), Port Store writes
 `downloads/to-download.txt`: the catalog's address, then each wanted file's name and address.
 Files brought into `downloads/` are used when their checksum matches; `downloads/index.json`
 is used when it is the newest catalog. Files listed and already brought drop off the list.
@@ -299,9 +344,12 @@ is used when it is the newest catalog. Files listed and already brought drop off
 
 1. Bump `version` in `app/Cargo.toml` and write `docs/releases/v<version>.md`.
 2. `tools/release.sh https://l0st0npl4net.github.io/PortStore-Catalog-MiyooMini/index.json`
-   → `out/PortStore-<version>.zip` (bundles `site/index.json` and `site/img/` if built).
-3. Push, then publish a GitHub release tagged `v<version>` with that zip and the notes.
-   `release.yml` rebuilds the catalog; devices are offered the update on their next start.
+   → `out/PortStore-<version>.zip`, with the published catalog and its pictures bundled
+   (`tools/fetch_catalog.py`; `PORTSTORE_LOCAL_CATALOG=1` takes `site/` instead).
+3. Push, then publish a GitHub release tagged `v<version>` **with that zip attached** and the
+   notes. `release.yml` rebuilds the catalog (also when the release is edited, e.g. the file
+   attached later); devices are offered the update on their next start. A release published
+   without its file shows as a warning in the "Recipes failing" issue.
 
 `tools/package.sh OUT URL` gives the same as a card folder (`OUT/App/PortStore`), with an
 install record for Port Store.
@@ -322,5 +370,7 @@ install record for Port Store.
 ## Open items
 
 - Mini v4 and Mini Flip: checked on screenshots only; needs a try on the devices.
+- curl processes still running (the catalog's download on start, a picture) are not stopped
+  when Port Store exits; they end by themselves.
 - The number of updates shows once Port Store has run; a check at boot would show it sooner.
 - Releases made of several files (Super Haxagon), `.ipk` packages.

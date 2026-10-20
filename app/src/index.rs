@@ -152,16 +152,50 @@ pub struct Manual {
     pub cover: String,
 }
 
+/// The catalog as read, before each entry is taken on its own.
+#[derive(Deserialize)]
+struct Raw {
+    format: u32,
+    #[serde(default)]
+    generated: String,
+    #[serde(default)]
+    ports: Vec<serde_json::Value>,
+    #[serde(default)]
+    manual: Vec<serde_json::Value>,
+}
+
 impl Index {
+    /// The catalog from `text`. An entry Port Store cannot read, or one whose paths
+    /// would lead off the card, is left out (and said in the log): one bad entry
+    /// never costs the whole catalog.
     pub fn parse(text: &str) -> Result<Index, String> {
-        let index: Index = serde_json::from_str(text).map_err(|e| format!("index: {e}"))?;
-        if index.format != FORMAT {
+        let raw: Raw = serde_json::from_str(text).map_err(|e| format!("index: {e}"))?;
+        if raw.format != FORMAT {
             return Err(format!(
                 "index format {} (this Port Store reads {FORMAT}): update Port Store",
-                index.format
+                raw.format
             ));
         }
-        Ok(index)
+        let ports = raw
+            .ports
+            .into_iter()
+            .filter_map(|v| {
+                let id = v.get("id").and_then(|i| i.as_str()).unwrap_or("?").to_string();
+                match serde_json::from_value::<Port>(v) {
+                    Ok(p) if p.sound() => Some(p),
+                    Ok(_) => {
+                        eprintln!("portstore: catalog: {id}: a path off the card, left out");
+                        None
+                    }
+                    Err(e) => {
+                        eprintln!("portstore: catalog: {id}: {e}, left out");
+                        None
+                    }
+                }
+            })
+            .collect();
+        let manual = raw.manual.into_iter().filter_map(|v| serde_json::from_value(v).ok()).collect();
+        Ok(Index { format: raw.format, generated: raw.generated, ports, manual })
     }
 
     pub fn port(&self, id: &str) -> Option<&Port> {
@@ -169,7 +203,39 @@ impl Index {
     }
 }
 
+/// A path from the card's root (or a prefix of one), as the catalog gives it: relative,
+/// never climbing out, no backslashes or NULs. Empty is no path at all.
+pub fn card_path(path: &str) -> bool {
+    !path.starts_with('/')
+        && !path.contains('\\')
+        && !path.contains('\0')
+        && !path.split('/').any(|part| part == ".." || part == ".")
+}
+
 impl Port {
+    /// Whether everything the port would write or remove stays on the card: its id
+    /// (a file and folder name) and every path its install rules and needs name.
+    pub fn sound(&self) -> bool {
+        let id = !self.id.is_empty()
+            && self.id != "."
+            && self.id != ".."
+            && self.id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+        let name = !self.file.name.is_empty() && !self.file.name.contains('/') && card_path(&self.file.name);
+        let mut paths: Vec<&str> = vec![self.into.as_str(), self.cover.as_str(), self.thumb.as_str()];
+        paths.extend(self.take.iter().map(String::as_str));
+        paths.extend(self.skip.iter().map(String::as_str));
+        paths.extend(self.keep.iter().map(String::as_str));
+        paths.extend(self.map.iter().map(|[_, to]| to.as_str()));
+        for need in &self.needs {
+            paths.extend(need.check.iter().map(String::as_str));
+            paths.extend(need.search.iter().map(String::as_str));
+        }
+        if let Some(sc) = &self.shortcut {
+            paths.extend([sc.launch.as_str(), sc.image.as_str(), sc.dir.as_str()]);
+        }
+        id && name && paths.into_iter().all(card_path)
+    }
+
     pub fn owned(&self) -> bool {
         self.assets == "owned"
     }

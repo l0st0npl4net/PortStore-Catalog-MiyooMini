@@ -101,7 +101,8 @@ enum View {
     Details { id: String, scroll: usize },
     Manual { at: usize, scroll: usize },
     Confirm { text: String, yes: Action },
-    Busy { title: String, step: Option<Step> },
+    /// A job on screen: whether B can stop it (downloads and checks only).
+    Busy { title: String, step: Option<Step>, stoppable: bool },
     Message { title: String, text: String },
 }
 
@@ -109,7 +110,7 @@ enum Msg {
     Step(Step),
     /// A ROM being read to check a port's needs.
     Checking(String),
-    Needs(String, Vec<Have>, Vec<Option<needs::Placement>>),
+    Needs(String, u64, Vec<Have>, Vec<Option<needs::Placement>>),
     Done(Result<Finished, String>),
     Index(Result<Index, String>),
     /// The catalog downloaded on start, without a word on screen.
@@ -159,6 +160,14 @@ pub struct App {
     offline: bool,
     /// Port Store has updated itself: start the new one on leaving.
     pub restart: bool,
+    /// A catalog downloaded while a job ran, taken in after it.
+    held_index: Option<Index>,
+    /// A newer catalog came: offer a newer Port Store once the list is on screen.
+    offer_pending: bool,
+    /// Per port, the number of its newest check of needs (older results are dropped).
+    needs_gen: HashMap<String, u64>,
+    /// How far each page can scroll, as last drawn.
+    scroll_max: usize,
     view: View,
     /// Where to go back to from a message or a job.
     under: Vec<View>,
@@ -188,6 +197,10 @@ impl App {
             newest: false,
             offline: false,
             restart: false,
+            held_index: None,
+            offer_pending: false,
+            needs_gen: HashMap::new(),
+            scroll_max: 0,
             pick: [0; 5],
             top: [0; 5],
             view: View::List,
@@ -314,7 +327,7 @@ impl App {
             View::Manual { at, scroll } => match key {
                 Key::B => self.view = View::List,
                 Key::Up => self.view = View::Manual { at, scroll: scroll.saturating_sub(1) },
-                Key::Down => self.view = View::Manual { at, scroll: scroll + 1 },
+                Key::Down => self.view = View::Manual { at, scroll: (scroll + 1).min(self.scroll_max) },
                 _ => {}
             },
             View::Confirm { yes, .. } => match key {
@@ -322,9 +335,9 @@ impl App {
                 Key::B => self.back(),
                 _ => {}
             },
-            View::Busy { step, .. } => {
-                let stoppable = matches!(step, None | Some(Step::Download { .. }) | Some(Step::Check));
-                if key == Key::B && stoppable {
+            View::Busy { step, stoppable, .. } => {
+                let now = stoppable && matches!(step, None | Some(Step::Download { .. }) | Some(Step::Check));
+                if key == Key::B && now {
                     self.cancel.store(true, Ordering::Relaxed);
                 }
             }
@@ -449,7 +462,7 @@ impl App {
         match key {
             Key::B => self.view = View::List,
             Key::Up => self.view = View::Details { id, scroll: scroll.saturating_sub(1) },
-            Key::Down => self.view = View::Details { id, scroll: (scroll + 1).min(60) },
+            Key::Down => self.view = View::Details { id, scroll: (scroll + 1).min(self.scroll_max) },
             Key::A => {
                 let verb = match state {
                     State::Installed(_) => "Reinstall",
@@ -469,7 +482,7 @@ impl App {
                 self.under.push(self.view.clone());
                 self.view = View::Confirm { text, yes: Action::Install(id) };
             }
-            Key::X if matches!(state, State::Installed(_) | State::Update(_)) => {
+            Key::X if matches!(state, State::Installed(_) | State::Update(_)) && id != crate::SELF_ID => {
                 let mut text = format!("Remove {}?", port.name);
                 if !port.keep.is_empty() {
                     text += " Your own files (game data, settings) stay.";
@@ -502,6 +515,8 @@ impl App {
 
     fn check_needs(&mut self, id: String) {
         let Some(port) = self.port(&id).cloned() else { return };
+        let gen = self.needs_gen.get(&id).map_or(1, |g| g + 1);
+        self.needs_gen.insert(id.clone(), gen);
         let store = self.store.clone();
         let tx = self.jobs.0.clone();
         std::thread::spawn(move || {
@@ -510,14 +525,28 @@ impl App {
                 let name = path.file_name().unwrap_or_default().to_string_lossy();
                 let _ = tx.send(Msg::Checking(name.into_owned()));
             });
-            let found = needs::importable(&store.card.home, &port, &have, &mut roms);
-            let _ = tx.send(Msg::Needs(id, have, found));
+            let found = needs::importable(&store.card.root, &store.card.home, &port, &have, &mut roms);
+            let _ = tx.send(Msg::Needs(id, gen, have, found));
         });
     }
 
     fn start(&mut self, action: Action) {
         if self.busy {
             return;
+        }
+        // The catalog may have changed under a dialog: a port gone from it is said so.
+        if let Action::Install(id) = &action {
+            if self.port(id).is_none() {
+                if matches!(self.view, View::Confirm { .. }) {
+                    self.view = self.under.pop().unwrap_or(View::List);
+                }
+                return self.message("Not in the catalog", "This port is no longer in the catalog.");
+            }
+        }
+        if let Action::Remove(id) = &action {
+            if id == crate::SELF_ID {
+                return;
+            }
         }
         self.busy = true;
         self.cancel.store(false, Ordering::Relaxed);
@@ -535,7 +564,8 @@ impl App {
             self.view = self.under.pop().unwrap_or(View::List);
         }
         self.under.push(self.view.clone());
-        self.view = View::Busy { title, step: None };
+        let stoppable = matches!(action, Action::Install(_) | Action::InstallMany(_) | Action::Refresh);
+        self.view = View::Busy { title, step: None, stoppable };
         let port = match &action {
             Action::Install(id) | Action::Remove(id) => self.port(id).cloned(),
             Action::Refresh | Action::InstallMany(_) | Action::Place(_) => None,
@@ -554,49 +584,74 @@ impl App {
             _ => Vec::new(),
         };
         std::thread::spawn(move || {
-            let done = match action {
-                Action::Refresh => {
-                    let _ = tx.send(Msg::Index(store.refresh(&cancel)));
-                    return;
-                }
-                Action::Install(_) => {
-                    let port = port.expect("a port of the catalog");
-                    store
-                        .install(&port, &cancel, &mut |step| {
-                            let _ = tx.send(Msg::Step(step));
-                        })
-                        .map(|_| Finished::Installed(port.id.clone()))
-                }
-                Action::Remove(id) => store.remove(&id, port.as_ref()).map(|_| Finished::Removed),
-                Action::Place(id) => placements
-                    .iter()
-                    .try_fold(0, |n, p| needs::place(&store.card.root, p).map(|m| n + m))
-                    .map(|n| Finished::Placed(id, n)),
-                Action::InstallMany(_) => {
-                    let (mut done, mut failed) = (Vec::new(), Vec::new());
-                    for (n, port) in queue.iter().enumerate() {
-                        if cancel.load(Ordering::Relaxed) {
-                            break;
-                        }
-                        let _ = tx.send(Msg::Queue(n + 1, queue.len(), port.name.clone()));
-                        match store.install(port, &cancel, &mut |step| {
-                            let _ = tx.send(Msg::Step(step));
-                        }) {
-                            Ok(_) => done.push(port.id.clone()),
-                            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => break,
-                            Err(e) => failed.push((port.id.clone(), e.to_string())),
-                        }
-                    }
-                    Ok(Finished::Many(done, failed))
-                }
-            };
-            let _ = tx.send(Msg::Done(done.map_err(|e| e.to_string())));
+            // A job that panics still ends: the screen is never left busy for good.
+            let ended = tx.clone();
+            let job = std::panic::AssertUnwindSafe(move || job(store, tx, cancel, action, port, placements, queue));
+            if std::panic::catch_unwind(job).is_err() {
+                let _ = ended.send(Msg::Done(Err("Port Store ran into an error it did not expect: see cache/portstore.log".into())));
+            }
         });
     }
+}
 
+/// A job's work, on its own thread; its end is sent as Msg::Done (or Msg::Index).
+#[allow(clippy::too_many_arguments)]
+fn job(
+    store: Arc<Store>,
+    tx: Sender<Msg>,
+    cancel: Arc<AtomicBool>,
+    action: Action,
+    port: Option<Port>,
+    placements: Vec<needs::Placement>,
+    queue: Vec<Port>,
+) {
+    let done = match action {
+        Action::Refresh => {
+            let _ = tx.send(Msg::Index(store.refresh(&cancel)));
+            return;
+        }
+        Action::Install(id) => match port {
+            Some(port) => store
+                .install(&port, &cancel, &mut |step| {
+                    let _ = tx.send(Msg::Step(step));
+                })
+                .map(|_| Finished::Installed(port.id.clone())),
+            None => Err(std::io::Error::other(format!("{id} is not in the catalog"))),
+        },
+        Action::Remove(id) => store.remove(&id, port.as_ref()).map(|_| Finished::Removed),
+        Action::Place(id) => placements
+            .iter()
+            .try_fold(0, |n, p| needs::place(&store.card.root, p).map(|m| n + m))
+            .map(|n| Finished::Placed(id, n)),
+        Action::InstallMany(_) => {
+            let (mut done, mut failed) = (Vec::new(), Vec::new());
+            for (n, port) in queue.iter().enumerate() {
+                if cancel.load(Ordering::Relaxed) {
+                    break;
+                }
+                let _ = tx.send(Msg::Queue(n + 1, queue.len(), port.name.clone()));
+                match store.install(port, &cancel, &mut |step| {
+                    let _ = tx.send(Msg::Step(step));
+                }) {
+                    Ok(_) => done.push(port.id.clone()),
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => break,
+                    Err(e) => failed.push((port.id.clone(), e.to_string())),
+                }
+            }
+            Ok(Finished::Many(done, failed))
+        }
+    };
+    let _ = tx.send(Msg::Done(done.map_err(|e| e.to_string())));
+}
+
+impl App {
     /// Take in what the jobs have sent, and pictures downloaded.
     pub fn pump(&mut self) {
         if self.pictures.pump() {
+            self.dirty = true;
+        }
+        if self.offer_pending && matches!(self.view, View::List) && !self.busy {
+            self.offer_self_update();
             self.dirty = true;
         }
         while let Ok(msg) = self.jobs.1.try_recv() {
@@ -609,34 +664,36 @@ impl App {
                 }
                 Msg::Checking(name) => self.checking = Some(name),
                 Msg::Queue(n, of, name) => {
-                    if let View::Busy { title, step } = &mut self.view {
+                    if let View::Busy { title, step, .. } = &mut self.view {
                         *title = format!("Installing {n} of {of}: {name}");
                         *step = None;
                     }
                 }
                 Msg::Quiet(result) => match result {
-                    Ok(index) => {
-                        self.offline = false;
-                        self.store.repair(&index);
-                        self.index = index;
-                        self.recount();
-                        self.offer_self_update();
-                    }
+                    // Not under a running job: it may be installing a port this
+                    // catalog changes. Taken in once the job is done.
+                    Ok(index) if self.busy => self.held_index = Some(index),
+                    Ok(index) => self.take_index(index),
                     Err(_) => {
                         self.offline = true;
-                        self.offer_self_update();
+                        self.offer_pending = true;
                     }
                 },
-                Msg::Needs(id, have, found) => {
-                    self.checking = None;
-                    self.imports.insert(id.clone(), found);
-                    self.needs.insert(id, have);
+                Msg::Needs(id, gen, have, found) => {
+                    // Only the newest check of a port counts.
+                    if self.needs_gen.get(&id) == Some(&gen) {
+                        self.checking = None;
+                        self.imports.insert(id.clone(), found);
+                        self.needs.insert(id, have);
+                    }
                 }
                 Msg::Index(result) => {
                     self.busy = false;
                     self.back();
+                    self.held_index = None;
                     match result {
                         Ok(index) => {
+                            self.offline = false;
                             self.store.repair(&index);
                             self.index = index;
                             self.recount();
@@ -649,6 +706,9 @@ impl App {
                 Msg::Done(result) => {
                     self.busy = false;
                     self.back();
+                    if let Some(index) = self.held_index.take() {
+                        self.take_index(index);
+                    }
                     self.recount();
                     match result {
                         Ok(Finished::Installed(id)) => self.installed(&id),
@@ -671,6 +731,15 @@ impl App {
         }
     }
 
+    /// A catalog downloaded quietly, taken in.
+    fn take_index(&mut self, index: Index) {
+        self.offline = false;
+        self.store.repair(&index);
+        self.index = index;
+        self.recount();
+        self.offer_pending = true;
+    }
+
     /// Download the catalog on start, quietly: the Updates tab stays true, and a new
     /// Port Store is offered at once.
     pub fn refresh_quietly(&mut self) {
@@ -684,13 +753,15 @@ impl App {
         });
     }
 
-    /// A newer Port Store in the catalog: offered once, over the list.
+    /// A newer Port Store in the catalog: offered once, over the list, as soon as the
+    /// list is on screen and nothing runs.
     fn offer_self_update(&mut self) {
-        let Some(me) = self.port(crate::SELF_ID).cloned() else { return };
-        let State::Update(have) = self.state(crate::SELF_ID) else { return };
-        if !matches!(self.view, View::List) || self.busy {
+        if !self.offer_pending || !matches!(self.view, View::List) || self.busy {
             return;
         }
+        self.offer_pending = false;
+        let Some(me) = self.port(crate::SELF_ID).cloned() else { return };
+        let State::Update(have) = self.state(crate::SELF_ID) else { return };
         self.under.push(self.view.clone());
         self.view = View::Confirm {
             text: format!(
@@ -768,10 +839,10 @@ impl App {
                 self.draw_under(c);
                 dialog(c, "Are you sure?", &text, None, "A  Yes      B  No");
             }
-            View::Busy { title, step } => {
+            View::Busy { title, step, stoppable } => {
                 self.draw_under(c);
                 let (text, bar) = step_text(step.as_ref());
-                let stoppable = matches!(step, None | Some(Step::Download { .. }) | Some(Step::Check));
+                let stoppable = stoppable && matches!(step, None | Some(Step::Download { .. }) | Some(Step::Check));
                 dialog(c, &title, &text, bar, if stoppable { "B  Cancel" } else { "" });
             }
             View::Message { title, text } => {
@@ -1038,15 +1109,17 @@ impl App {
             y += self.page_top(c, TOP, &port.cover, &facts);
         }
         let mut hidden = 0;
-        for (px, color, text) in lines.iter().skip(scroll.saturating_sub(1)) {
+        for (n, (px, color, text)) in lines.iter().skip(scroll.saturating_sub(1)).enumerate() {
             let h = *px as i32 + 7;
+            // In order: the first line that does not fit ends the page.
             if y + h > foot(c) - 4 {
-                hidden += 1;
-                continue;
+                hidden = lines.len() - scroll.saturating_sub(1) - n;
+                break;
             }
             c.text(24, y, *px, *color, text);
             y += h;
         }
+        self.scroll_max = if hidden > 0 { scroll + 1 } else { scroll };
         if scroll > 0 || hidden > 0 {
             c.text_right(c.w as i32 - 16, foot(c) - 22, 13, DIM, if hidden > 0 { "▼ more" } else { "▲" });
         }
@@ -1056,7 +1129,7 @@ impl App {
             _ => "A Install",
         };
         let mut keys = vec![verb];
-        if matches!(state, State::Installed(_) | State::Update(_)) {
+        if matches!(state, State::Installed(_) | State::Update(_)) && id != crate::SELF_ID {
             keys.push("X Remove");
         }
         if !port.needs.is_empty() {
@@ -1091,13 +1164,16 @@ impl App {
         if scroll == 0 {
             y += self.page_top(c, TOP, &m.cover, &facts);
         }
+        let mut more = false;
         for (px, color, text) in lines.iter().skip(scroll.saturating_sub(1)) {
             if y + *px as i32 + 7 > foot(c) - 4 {
+                more = true;
                 break;
             }
             c.text(24, y, *px, *color, text);
             y += *px as i32 + 7;
         }
+        self.scroll_max = if more { scroll + 1 } else { scroll };
         footer(c, "", "B Back");
     }
 }
@@ -1152,7 +1228,15 @@ fn footer(c: &mut Canvas, left: &str, keys: &str) {
 
 fn dialog(c: &mut Canvas, title: &str, text: &str, bar: Option<f32>, keys: &str) {
     let w = 520;
-    let lines = c.wrap(17, text, w - 48);
+    let mut lines = c.wrap(17, text, w - 48);
+    // On the screen whole: what does not fit ends in "…".
+    let room = ((c.h as i32 - 70 - 30 - 34 - 40) / 24).max(1) as usize;
+    if lines.len() > room {
+        lines.truncate(room);
+        if let Some(last) = lines.last_mut() {
+            last.push_str(" …");
+        }
+    }
     let h = 70 + lines.len() as i32 * 24 + if bar.is_some() { 30 } else { 0 } + if keys.is_empty() { 0 } else { 34 };
     let (x, y) = ((c.w as i32 - w) / 2, (c.h as i32 - h) / 2);
     c.rounded(x, y, w, h, 14, PANEL);
@@ -1270,6 +1354,7 @@ pub fn shots(store: Store, dir: &std::path::Path, ids: &[String]) -> Result<(), 
     }
     app.under.push(app.view.clone());
     app.view = View::Busy {
+        stoppable: true,
         title: "Installing Mario Kart 64".into(),
         step: Some(Step::Download { done: 600 << 10, total: 1381855 }),
     };
@@ -1380,5 +1465,66 @@ mod tests {
             seen.push(app.genre.clone());
         }
         assert_eq!(seen, [Some("arcade".into()), Some("racing".into()), None]);
+    }
+
+    #[test]
+    fn port_stores_own_page_offers_no_remove() {
+        let mut app = app(&[("Port Store", "", &["app"])]);
+        app.index.ports[0].id = crate::SELF_ID.into();
+        app.index.ports[0].version = format!("v{}", env!("CARGO_PKG_VERSION"));
+        app.view = View::Details { id: crate::SELF_ID.into(), scroll: 0 };
+        app.key(Key::X);
+        assert!(matches!(app.view, View::Details { .. }), "no Confirm for removing itself");
+    }
+
+    #[test]
+    fn a_port_gone_from_the_catalog_under_its_dialog_is_said_so() {
+        let mut app = app(&[("A", "", &["x"])]);
+        app.view = View::Confirm { text: String::new(), yes: Action::Install("gone".into()) };
+        app.key(Key::A);
+        assert!(!app.busy);
+        assert!(matches!(&app.view, View::Message { title, .. } if title == "Not in the catalog"));
+    }
+
+    #[test]
+    fn a_good_catalog_clears_offline_and_one_downloaded_during_a_job_waits_for_it() {
+        let mut app = app(&[("A", "", &["x"])]);
+        app.offline = true;
+        app.busy = true;
+        let mut newer = app.index.clone();
+        newer.generated = "later".into();
+        app.jobs.0.send(Msg::Quiet(Ok(newer))).unwrap();
+        app.pump();
+        assert!(app.held_index.is_some(), "held while the job runs");
+        assert!(app.offline);
+        app.jobs.0.send(Msg::Done(Ok(Finished::Removed))).unwrap();
+        app.pump();
+        assert!(app.held_index.is_none());
+        assert_eq!(app.index.generated, "later");
+        assert!(!app.offline);
+    }
+
+    #[test]
+    fn only_the_newest_check_of_a_port_counts() {
+        let mut app = app(&[("A", "", &["x"])]);
+        app.needs_gen.insert("a".into(), 2);
+        app.jobs.0.send(Msg::Needs("a".into(), 1, vec![Have::Missing], vec![None])).unwrap();
+        app.pump();
+        assert!(!app.needs.contains_key("a"), "an older check is dropped");
+        app.jobs.0.send(Msg::Needs("a".into(), 2, vec![Have::Unknown], vec![None])).unwrap();
+        app.pump();
+        assert_eq!(app.needs["a"], [Have::Unknown]);
+    }
+
+    #[test]
+    fn a_page_scrolls_no_further_than_its_end() {
+        let mut app = app(&[("A", "", &["x"])]);
+        app.view = View::Details { id: "a".into(), scroll: 0 };
+        let mut c = Canvas::new(W, H);
+        for _ in 0..20 {
+            app.draw(&mut c);
+            app.key(Key::Down);
+        }
+        assert!(matches!(app.view, View::Details { scroll, .. } if scroll <= 1), "{:?}", app.view);
     }
 }

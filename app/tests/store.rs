@@ -177,7 +177,7 @@ fn zip_members_are_read_stored_and_deflated() {
     let names: Vec<_> = ms.iter().map(|m| (m.name.as_str(), m.size, m.dir)).collect();
     assert_eq!(names, [("A/", 0, true), ("A/one.txt", 3, false), ("A/two.bin", big.len() as u64, false)]);
     let mut got = Vec::new();
-    archive::extract(&z, "zip", |m, r| {
+    archive::extract(&z, "zip", |_| true, |m, r| {
         let mut b = Vec::new();
         r.read_to_end(&mut b)?;
         got.push((m.name.clone(), b));
@@ -198,7 +198,7 @@ fn a_damaged_zip_member_is_refused() {
     let at = bytes.windows(8).position(|w| w == b"original").unwrap();
     bytes[at] = b'X';
     fs::write(&z, bytes).unwrap();
-    let err = archive::extract(&z, "zip", |_, r| r.read_to_end(&mut Vec::new()).map(|_| ())).unwrap_err();
+    let err = archive::extract(&z, "zip", |_| true, |_, r| r.read_to_end(&mut Vec::new()).map(|_| ())).unwrap_err();
     assert!(err.to_string().contains("damaged"), "{err}");
 }
 
@@ -260,7 +260,7 @@ fn tar_gz_with_long_names_is_read() {
     let names: Vec<_> = ms.iter().map(|m| m.name.clone()).collect();
     assert_eq!(names, ["Roms/".to_string(), "Roms/a.txt".into(), long.clone()]);
     let mut got = Vec::new();
-    archive::extract(&t, "tar.gz", |m, r| {
+    archive::extract(&t, "tar.gz", |_| true, |m, r| {
         let mut s = String::new();
         r.read_to_string(&mut s)?;
         got.push((m.name.clone(), s));
@@ -905,7 +905,7 @@ fn game_files_brought_into_import_find_their_place() {
     };
     let mut roms = Roms::open(&home);
     let have = needs::check(&card, &p, &mut roms, &mut |_| {});
-    let found = needs::importable(&home, &p, &have, &mut roms);
+    let found = needs::importable(&card, &home, &p, &have, &mut roms);
     let placed: Vec<Option<(String, String)>> =
         found.iter().map(|f| f.as_ref().map(|f| (f.shown.clone(), f.to.clone()))).collect();
     assert_eq!(
@@ -929,4 +929,363 @@ fn game_files_brought_into_import_find_their_place() {
     assert!(matches!(have[..4], [Have::Found(_), Have::Found(_), Have::Found(_), Have::Found(_)]), "{have:?}");
     assert_eq!(files_under(&home.join("import")), Vec::<String>::new(), "import/ left empty");
     let _ = s;
+}
+
+// ---- review fixes (1.0.0) ----
+
+/// Set the compression method of `name` in a zip's central directory.
+fn patch_method(path: &Path, name: &str, method: u16) {
+    let mut b = fs::read(path).unwrap();
+    let mut at = 0;
+    while let Some(i) = b[at..].windows(4).position(|w| w == [0x50, 0x4b, 0x01, 0x02]) {
+        let h = at + i;
+        let n = u16::from_le_bytes([b[h + 28], b[h + 29]]) as usize;
+        if &b[h + 46..h + 46 + n] == name.as_bytes() {
+            b[h + 10..h + 12].copy_from_slice(&method.to_le_bytes());
+        }
+        at = h + 4;
+    }
+    fs::write(path, b).unwrap();
+}
+
+#[test]
+fn port_store_never_removes_itself() {
+    let card = temp("self-remove");
+    let s = store(&card);
+    fs::create_dir_all(card.join("App/PortStore/installed")).unwrap();
+    fs::write(card.join("App/PortStore/portstore"), "elf").unwrap();
+    fs::write(
+        card.join("App/PortStore/installed/portstore.json"),
+        r#"{"id":"portstore","version":"v1.0.0","files":["App/PortStore/portstore"]}"#,
+    )
+    .unwrap();
+    assert!(s.remove(portstore::SELF_ID, None).is_err());
+    assert!(card.join("App/PortStore/portstore").exists());
+}
+
+#[test]
+fn a_catalog_entry_port_store_cannot_read_costs_only_itself() {
+    let good = r#"{"id":"good","name":"Good","version":"1","file":{"url":"u","name":"g.zip","size":1,"sha256":"x","kind":"zip"},"take":["App/"],"install":{"files":1,"bytes":1}}"#;
+    let typed_wrong = r#"{"id":"bad","name":"Bad","categories":"game","version":"1","file":{"url":"u","name":"b.zip","size":1,"sha256":"x","kind":"zip"},"take":["App/"],"install":{"files":1,"bytes":1}}"#;
+    let off_card = r#"{"id":"evil","name":"Evil","version":"1","into":"/etc/","file":{"url":"u","name":"e.zip","size":1,"sha256":"x","kind":"zip"},"take":[],"install":{"files":1,"bytes":1}}"#;
+    let climbing = r#"{"id":"../x","name":"X","version":"1","file":{"url":"u","name":"x.zip","size":1,"sha256":"x","kind":"zip"},"take":["App/"],"install":{"files":1,"bytes":1}}"#;
+    let text = format!(
+        r#"{{"format":1,"generated":"g","ports":[{good},{typed_wrong},{off_card},{climbing}],"manual":[{{"name":"M","categories":"game"}},{{"name":"N"}}]}}"#
+    );
+    let index = Index::parse(&text).unwrap();
+    assert_eq!(index.ports.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), ["good"]);
+    assert_eq!(index.manual.len(), 1);
+}
+
+#[test]
+fn an_update_that_changes_only_case_keeps_its_file() {
+    let card = temp("case");
+    let src = temp("case-src");
+    let s = store(&card);
+    let z1 = src.join("v1.zip");
+    zip(&z1, &[("Game-1.0/App/Game/Data/x.bin", b"1", false), ("Game-1.0/App/Game/launch.sh", b"x", false)]);
+    let z2 = src.join("v2.zip");
+    zip(&z2, &[("Game-1.0/App/Game/data/x.bin", b"2", false), ("Game-1.0/App/Game/launch.sh", b"x", false)]);
+    let (mut p1, mut p2) = (port("game", &z1, "1"), port("game", &z2, "2"));
+    p1.categories = vec!["app".into()];
+    p2.categories = vec!["app".into()];
+    s.install(&p1, &AtomicBool::new(false), &mut |_| {}).unwrap();
+    s.install(&p2, &AtomicBool::new(false), &mut |_| {}).unwrap();
+    // On FAT32 the two are one file: the update must not remove "Data/x.bin".
+    assert!(card.join("App/Game/Data/x.bin").exists(), "not removed as gone");
+}
+
+#[test]
+fn members_landing_on_one_path_are_one_file() {
+    let card = temp("dupes");
+    let src = temp("dupes-src");
+    let s = store(&card);
+    let z = src.join("Game-1.0.zip");
+    zip(
+        &z,
+        &[
+            ("Game-1.0/App/Game/a.txt", b"first", false),
+            ("Game-1.0/App/Game/A.TXT", b"second", false),
+            ("Game-1.0/App/Game/a.txt", b"third", false),
+        ],
+    );
+    let mut p = port("game", &z, "1");
+    p.categories = vec!["app".into()];
+    let rec = s.install(&p, &AtomicBool::new(false), &mut |_| {}).unwrap();
+    assert_eq!(rec.files, ["App/Game/a.txt"]);
+    assert_eq!(fs::read_to_string(card.join("App/Game/a.txt")).unwrap(), "third");
+}
+
+#[test]
+fn an_install_stopped_half_way_is_recorded_and_offered_again() {
+    let card = temp("half");
+    let src = temp("half-src");
+    let s = store(&card);
+    let z = src.join("Game-1.0.zip");
+    zip(&z, &[("Game-1.0/App/Game/a.txt", b"a", false), ("Game-1.0/App/Game/b/c.txt", b"c", false)]);
+    let mut p = port("game", &z, "1");
+    p.categories = vec!["app".into()];
+    // "App/Game/b" is a file on the card: c.txt cannot be put in it.
+    fs::create_dir_all(card.join("App/Game")).unwrap();
+    fs::write(card.join("App/Game/b"), "in the way").unwrap();
+    assert!(s.install(&p, &AtomicBool::new(false), &mut |_| {}).is_err());
+    let rec = s.card.installed("game").expect("a record of what was put on the card");
+    assert!(rec.files.contains(&"App/Game/a.txt".to_string()));
+    assert_eq!(s.state(&p), State::Update(portstore::install::INCOMPLETE.into()));
+    assert!(!card.join("App/PortStore/cache/stage-game").exists());
+}
+
+#[test]
+fn a_file_kept_and_now_skipped_is_never_deleted() {
+    let card = temp("keep-skip");
+    let s = store(&card);
+    fs::create_dir_all(card.join("App/Game")).unwrap();
+    fs::write(card.join("App/Game/settings.cfg"), "mine").unwrap();
+    fs::create_dir_all(card.join("App/PortStore/installed")).unwrap();
+    fs::write(
+        card.join("App/PortStore/installed/game.json"),
+        r#"{"id":"game","version":"1","files":["App/Game/settings.cfg"]}"#,
+    )
+    .unwrap();
+    let p = Port {
+        id: "game".into(),
+        version: "1".into(),
+        categories: vec!["app".into()],
+        skip: vec!["App/Game/settings.cfg".into()],
+        keep: vec!["App/Game/settings.cfg".into()],
+        ..Port::default()
+    };
+    s.repair(&Index { format: 1, ports: vec![p], ..Index::default() });
+    assert_eq!(fs::read_to_string(card.join("App/Game/settings.cfg")).unwrap(), "mine");
+}
+
+#[test]
+fn a_tar_long_name_before_a_fifo_is_the_fifos() {
+    let dir = temp("tar-fifo");
+    let t = dir.join("a.tar.gz");
+    let long = format!("App/X/{}", "f".repeat(120));
+    tar_gz(&t, &[(&long, b"", b'6'), ("App/X/launch.sh", b"x", b'0')]);
+    let names: Vec<String> = archive::members(&t, "tar.gz").unwrap().into_iter().map(|m| m.name).collect();
+    assert_eq!(names, ["App/X/launch.sh"]);
+}
+
+#[test]
+fn a_tar_cut_short_is_refused() {
+    let dir = temp("tar-short");
+    let mut t = tar_header("App/X/big.bin", 2000, b'0').to_vec();
+    t.extend([7u8; 1024]);
+    let path = dir.join("a.tar");
+    fs::write(&path, t).unwrap();
+    let err = archive::extract(&path, "tar", |_| true, |_, r| r.read_to_end(&mut Vec::new()).map(|_| ())).unwrap_err();
+    assert!(err.to_string().contains("cut short"), "{err}");
+}
+
+#[test]
+fn a_member_left_out_is_never_read() {
+    let card = temp("left-out");
+    let src = temp("left-out-src");
+    let s = store(&card);
+    let z = src.join("Game-1.0.zip");
+    zip(&z, &[("Game-1.0/App/Game/launch.sh", b"x", false), ("Game-1.0/Tools/tool.exe", b"MZ", false)]);
+    patch_method(&z, "Game-1.0/Tools/tool.exe", 12);
+    let mut p = port("game", &z, "1");
+    p.categories = vec!["app".into()];
+    p.file.sha256 = sha256(&z);
+    s.install(&p, &AtomicBool::new(false), &mut |_| {}).unwrap();
+    assert!(card.join("App/Game/launch.sh").exists());
+}
+
+#[test]
+fn zip_names_without_the_utf8_flag_are_read_as_python_reads_them() {
+    assert_eq!(archive::zip_name("Café/x".as_bytes(), false), "Café/x", "valid UTF-8 as such");
+    assert_eq!(archive::zip_name(&[b'C', b'a', b'f', 0x82, b'/'], false), "Café/", "else code page 437");
+    assert_eq!(archive::zip_name(&[0x82], true), "\u{fffd}");
+}
+
+#[test]
+fn two_games_of_one_name_get_a_launcher_each() {
+    let card = temp("same-name");
+    let src = temp("same-name-src");
+    let s = store(&card);
+    let mk = |id: &str| {
+        let z = src.join(format!("{id}.zip"));
+        zip(&z, &[(&format!("Game-1.0/App/{id}/launch.sh"), b"x", false)]);
+        let mut p = port(id, &z, "1");
+        p.name = "Same Game".into();
+        p.shortcut = Some(Shortcut { launch: format!("App/{id}/launch.sh"), ..Default::default() });
+        p
+    };
+    let (a, b) = (mk("aaa"), mk("bbb"));
+    s.install(&a, &AtomicBool::new(false), &mut |_| {}).unwrap();
+    s.install(&b, &AtomicBool::new(false), &mut |_| {}).unwrap();
+    assert!(fs::read_to_string(card.join("Roms/MiyooPorts/Same Game.sh")).unwrap().contains("App/aaa"));
+    assert!(fs::read_to_string(card.join("Roms/MiyooPorts/Same Game (bbb).sh")).unwrap().contains("App/bbb"));
+    // Starting again changes nothing (no ping-pong between the two).
+    let before = fs::read_to_string(card.join("App/PortStore/installed/aaa.json")).unwrap();
+    s.repair(&Index { format: 1, ports: vec![a.clone(), b.clone()], ..Index::default() });
+    s.repair(&Index { format: 1, ports: vec![a, b], ..Index::default() });
+    assert_eq!(fs::read_to_string(card.join("App/PortStore/installed/aaa.json")).unwrap(), before);
+}
+
+#[test]
+fn a_launchers_picture_stays_until_a_new_one_is_at_hand() {
+    let card = temp("picture-stays");
+    let src = temp("picture-stays-src");
+    let s = store(&card);
+    let z = src.join("Game-1.0.zip");
+    zip(&z, &[("Game-1.0/App/Game/launch.sh", b"x", false)]);
+    let mut p = port("game", &z, "1");
+    p.shortcut = Some(Shortcut { launch: "App/Game/launch.sh".into(), ..Default::default() });
+    p.cover = "img/game-cover-1.png".into();
+    fs::create_dir_all(card.join("App/PortStore/img")).unwrap();
+    fs::write(card.join("App/PortStore/img/game-cover-1.png"), "PNG1").unwrap();
+    s.install(&p, &AtomicBool::new(false), &mut |_| {}).unwrap();
+    // A newer catalog's picture, not downloaded yet.
+    p.cover = "img/game-cover-2.png".into();
+    s.repair(&Index { format: 1, ports: vec![p], ..Index::default() });
+    assert_eq!(fs::read(card.join("Roms/MiyooPorts/Imgs/Game.png")).unwrap(), b"PNG1");
+}
+
+#[test]
+fn removing_a_port_gone_from_the_catalog_keeps_its_kept_files() {
+    let card = temp("keep-record");
+    let src = temp("keep-record-src");
+    let s = store(&card);
+    let z = src.join("Game-1.0.zip");
+    zip(&z, &[("Game-1.0/App/Game/launch.sh", b"x", false), ("Game-1.0/App/Game/settings.cfg", b"d", false)]);
+    let mut p = port("game", &z, "1");
+    p.categories = vec!["app".into()];
+    s.install(&p, &AtomicBool::new(false), &mut |_| {}).unwrap();
+    s.remove("game", None).unwrap();
+    assert!(card.join("App/Game/settings.cfg").exists());
+    assert!(!card.join("App/Game/launch.sh").exists());
+}
+
+#[test]
+fn versions_compare_as_people_mean_them() {
+    use portstore::newer;
+    assert!(newer("v1.2.0", "", "v1.2.0-rc2", ""), "the release after its candidate");
+    assert!(!newer("v1.2.0-rc2", "", "v1.2.0", ""));
+    assert!(!newer("v1.2.0", "", "v1.2", ""), "1.2 is 1.2.0");
+    assert!(newer("v2.0", "2026-10-01", "2024.05.01", "2024-05-01"), "a year against a major: by date");
+    assert!(newer("v1.3-x64", "", "v1.2-x64", ""));
+    assert!(!newer("v1.2-x64", "", "v1.2-x64", ""));
+    assert!(newer("v1.10", "", "v1.9", ""));
+    assert!(newer("onion-v3", "", "onion-v2", ""));
+}
+
+#[test]
+fn the_same_tag_uploaded_again_is_an_update() {
+    let card = temp("same-tag");
+    let src = temp("same-tag-src");
+    let s = store(&card);
+    let z = src.join("Game-1.0.zip");
+    zip(&z, &[("Game-1.0/App/Game/launch.sh", b"x", false)]);
+    let mut p = port("game", &z, "onion-v2");
+    p.categories = vec!["app".into()];
+    p.date = "2026-10-01".into();
+    s.install(&p, &AtomicBool::new(false), &mut |_| {}).unwrap();
+    assert_eq!(s.state(&p), State::Installed("onion-v2".into()));
+    p.file.sha256 = "0".repeat(64);
+    p.date = "2026-10-05".into();
+    assert_eq!(s.state(&p), State::Update("onion-v2".into()));
+}
+
+#[test]
+fn a_leftover_part_of_another_release_is_never_taken() {
+    let card = temp("part");
+    let src = temp("part-src");
+    let s = store(&card);
+    let z = src.join("Game-1.0.zip");
+    zip(&z, &[("Game-1.0/App/Game/launch.sh", b"x", false)]);
+    let mut p = port("game", &z, "1");
+    p.categories = vec!["app".into()];
+    // A leftover of the same name, from before (not by its checksum): not looked at.
+    fs::create_dir_all(card.join("App/PortStore/cache")).unwrap();
+    fs::write(card.join("App/PortStore/cache/Game-1.0.zip"), "old release").unwrap();
+    s.install(&p, &AtomicBool::new(false), &mut |_| {}).unwrap();
+    assert!(card.join("App/Game/launch.sh").exists());
+}
+
+#[test]
+fn a_wrong_file_in_downloads_is_set_aside_and_asked_for_again() {
+    let card = temp("wrong-download");
+    let src = temp("wrong-download-src");
+    let mut s = store(&card);
+    s.fetcher.curl = script(&src, "curl", "exit 6");
+    let z = src.join("Game-1.0.zip");
+    zip(&z, &[("Game-1.0/App/Game/launch.sh", b"x", false)]);
+    let mut p = port("game", &z, "1");
+    p.file.url = "https://example.org/Game-1.0.zip".into();
+    fs::create_dir_all(card.join("App/PortStore/downloads")).unwrap();
+    fs::write(card.join("App/PortStore/downloads/Game-1.0.zip"), "an older release").unwrap();
+    assert!(s.install(&p, &AtomicBool::new(false), &mut |_| {}).is_err());
+    assert!(card.join("App/PortStore/downloads/Game-1.0.zip.wrong").exists());
+    let list = fs::read_to_string(card.join("App/PortStore/downloads/to-download.txt")).unwrap();
+    assert!(list.contains("File: Game-1.0.zip"), "{list}");
+}
+
+#[test]
+fn files_from_import_never_go_into_a_shared_folder_nor_over_a_rom() {
+    let card = temp("import-guard");
+    let home = card.join("App/PortStore");
+    let s = store(&card);
+    let put = |f: &str, data: &[u8]| {
+        let p = home.join("import").join(f);
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(p, data).unwrap();
+    };
+    put("Downloads/Fallout/master.dat", b"m");
+    put("Downloads/holiday.jpg", b"j");
+    put("TR1/DATA/level1.phd", b"l");
+    let mut rom = vec![0x80, 0x37, 0x12, 0x40];
+    rom.resize(0x40, 9);
+    put("Downloads/mk64.z64", &rom);
+    fs::create_dir_all(card.join("Roms/N64")).unwrap();
+    fs::write(card.join("Roms/N64/mk64.z64"), "the user's other version").unwrap();
+    let need = |check: &str| Need { what: "files".into(), check: vec![check.into()], ..Need::default() };
+    let p = Port {
+        needs: vec![
+            need("Roms/PORTS/Games/Fallout/master.dat"),
+            need("Roms/PORTS/Games/OpenLara/Tomb Raider 1/DATA"),
+            Need {
+                what: "ROM".into(),
+                sha1: hex(&<sha1::Sha1 as sha1::Digest>::digest(&rom)),
+                search: vec!["Roms/N64".into()],
+                ..Need::default()
+            },
+        ],
+        ..Port::default()
+    };
+    let mut roms = Roms::open(&home);
+    let have = needs::check(&card, &p, &mut roms, &mut |_| {});
+    let found = needs::importable(&card, &home, &p, &have, &mut roms);
+    let to: Vec<Option<String>> = found.iter().map(|f| f.as_ref().map(|f| f.to.clone())).collect();
+    assert_eq!(
+        to,
+        [
+            Some("Roms/PORTS/Games/Fallout".into()),
+            // A folder check: the folder holding DATA goes in as "Tomb Raider 1".
+            Some("Roms/PORTS/Games/OpenLara/Tomb Raider 1".into()),
+            Some("Roms/N64/mk64 (2).z64".into()),
+        ]
+    );
+    for f in found.iter().flatten() {
+        needs::place(&card, f).unwrap();
+    }
+    assert!(home.join("import/Downloads/holiday.jpg").exists(), "the rest stays in import");
+    assert_eq!(fs::read_to_string(card.join("Roms/N64/mk64.z64")).unwrap(), "the user's other version");
+    assert!(card.join("Roms/PORTS/Games/OpenLara/Tomb Raider 1/DATA/level1.phd").exists());
+    let _ = s;
+}
+
+#[test]
+fn the_updates_line_in_apps_is_written_whole() {
+    let card = temp("note-atomic");
+    let s = store(&card);
+    let config = card.join("App/PortStore/config.json");
+    fs::write(&config, r#"{"label": "Port Store", "description": "Install and update ports"}"#).unwrap();
+    s.note_updates(2);
+    assert!(!card.join("App/PortStore/config.json.part").exists());
+    assert!(fs::read_to_string(&config).unwrap().contains("2 updates"));
 }

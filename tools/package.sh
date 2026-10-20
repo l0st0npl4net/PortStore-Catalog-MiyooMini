@@ -22,9 +22,14 @@ chmod +x "$app/launch.sh" "$app/portstore"
 printf '{\n  "index": "%s"\n}\n' "$url" > "$app/settings.json"
 # Mozilla's root certificates, for checking the servers (curl --cacert).
 cp /etc/ssl/certs/ca-certificates.crt "$app/cacert.pem"
-[ -f "$here/site/index.json" ] && cp "$here/site/index.json" "$app/index.json"
-# The catalog's pictures, for a Mini without Wi-Fi (newer ones are downloaded).
-[ -d "$here/site/img" ] && cp -r "$here/site/img" "$app/img"
+# The published catalog and its pictures, as the devices get it (for a Mini without
+# Wi-Fi; newer ones are downloaded). PORTSTORE_LOCAL_CATALOG=1 takes site/ instead.
+if [ -n "$url" ] && [ -z "${PORTSTORE_LOCAL_CATALOG:-}" ]; then
+    python3 -I "$here/tools/fetch_catalog.py" "$url" "$app"
+elif [ -f "$here/site/index.json" ]; then
+    cp "$here/site/index.json" "$app/index.json"
+    [ -d "$here/site/img" ] && cp -r "$here/site/img" "$app/img"
+fi
 cp "$here/LICENSE" "$app/licenses/PortStore.txt"
 cp "$here/assets/DejaVu_License.txt" "$app/licenses/DejaVu.txt"
 (cd "$here/app" && cargo metadata --format-version 1 --filter-platform armv7-unknown-linux-gnueabihf) |

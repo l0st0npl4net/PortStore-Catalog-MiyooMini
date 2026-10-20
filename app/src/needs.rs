@@ -214,7 +214,7 @@ fn find_like_import(card: &Path, path: &str) -> Option<String> {
         return Some(path.to_string());
     }
     let (dir, name) = path.rsplit_once('/')?;
-    fn walk(card: &Path, dir: &Path, name: &str, depth: u32) -> Option<PathBuf> {
+    fn walk(dir: &Path, name: &str, depth: u32) -> Option<PathBuf> {
         let mut subdirs = Vec::new();
         for e in fs::read_dir(dir).ok()?.filter_map(|e| e.ok()) {
             let p = e.path();
@@ -226,11 +226,11 @@ fn find_like_import(card: &Path, path: &str) -> Option<String> {
         }
         if depth > 1 {
             subdirs.sort();
-            return subdirs.iter().find_map(|d| walk(card, d, name, depth - 1));
+            return subdirs.iter().find_map(|d| walk(d, name, depth - 1));
         }
         None
     }
-    let found = walk(card, &card.join(dir), name, 2)?;
+    let found = walk(&card.join(dir), name, 2)?;
     Some(found.strip_prefix(card).ok()?.to_string_lossy().into_owned())
 }
 
@@ -259,11 +259,14 @@ pub struct Placement {
 /// (None where nothing fits). For a file check: a file of that name (any case)
 /// anywhere below import/, whose folder is the game's folder, matched by the folders
 /// the check path and the found path end in alike. For a ROM: one of the right SHA-1.
-pub fn importable(home: &Path, port: &Port, have: &[Have], roms: &mut Roms) -> Vec<Option<Placement>> {
+pub fn importable(card: &Path, home: &Path, port: &Port, have: &[Have], roms: &mut Roms) -> Vec<Option<Placement>> {
     let import = home.join(IMPORT);
     let mut files = Vec::new();
     walk(&import, 6, &mut files);
-    port.needs
+    // Folders too: a check may name one (Tomb Raider's DATA).
+    let mut entries = files.clone();
+    walk_dirs(&import, 6, &mut entries);
+    let found: Vec<Option<Placement>> = port.needs
         .iter()
         .zip(have)
         .map(|(need, have)| {
@@ -279,16 +282,45 @@ pub fn importable(home: &Path, port: &Port, have: &[Have], roms: &mut Roms) -> V
                 })?;
                 roms.save();
                 let dir = need.search.first().cloned().unwrap_or_else(|| "Roms/N64".into());
-                let name = rom.file_name()?.to_string_lossy().into_owned();
-                return Some(Placement {
-                    from: rom.clone(),
-                    to: format!("{dir}/{name}"),
-                    shown: shown(&import, rom),
-                });
+                let to = free_name(card, &dir, &rom.file_name()?.to_string_lossy());
+                return Some(Placement { from: rom.clone(), to, shown: shown(&import, rom) });
             }
-            need.check.iter().find_map(|check| place_for(&import, &files, check))
+            need.check.iter().find_map(|check| place_for(&import, &entries, check))
         })
+        .collect();
+    // A placement inside another's folder moves with it: only the outer one is kept.
+    let froms: Vec<PathBuf> = found.iter().flatten().map(|p| p.from.clone()).collect();
+    found
+        .into_iter()
+        .map(|p| p.filter(|p| !froms.iter().any(|f| f != &p.from && p.from.starts_with(f))))
         .collect()
+}
+
+/// `dir/name` on the card, or `dir/<stem> (2).<ext>`… when another file has that
+/// name: a ROM of another version the user has is never replaced.
+fn free_name(card: &Path, dir: &str, name: &str) -> String {
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((s, e)) => (s.to_string(), format!(".{e}")),
+        None => (name.to_string(), String::new()),
+    };
+    let mut n = 1;
+    loop {
+        let candidate = match n {
+            1 => format!("{dir}/{name}"),
+            n => format!("{dir}/{stem} ({n}){ext}"),
+        };
+        if !card.join(&candidate).exists() {
+            return candidate;
+        }
+        n += 1;
+    }
+}
+
+/// Folders the card and other ports share (as install's removal keeps them): never
+/// the target of a whole folder from import/.
+fn shared_folder(path: &str) -> bool {
+    let n = path.split('/').filter(|p| !p.is_empty()).count();
+    n <= 1 || path.starts_with("Roms") && n <= 3
 }
 
 fn shown(import: &Path, path: &Path) -> String {
@@ -324,10 +356,27 @@ fn place_for(import: &Path, files: &[PathBuf], check: &str) -> Option<Placement>
         .zip(found_dirs.iter().rev())
         .take_while(|(a, b)| a.eq_ignore_ascii_case(b))
         .count();
-    let up = shared.min(found_dirs.len() - 1).min(dirs.len().saturating_sub(1));
+    let mut up = shared.min(found_dirs.len() - 1).min(dirs.len().saturating_sub(1));
+    // Never into a folder the card shares (Roms/PORTS/Games): the game's own one.
+    while up > 0 && shared_folder(&dirs[..dirs.len() - up].join("/")) {
+        up -= 1;
+    }
     let from = import.join(found_dirs[..found_dirs.len() - up].iter().collect::<PathBuf>());
     let to = dirs[..dirs.len() - up].join("/");
+    if shared_folder(&to) {
+        return None;
+    }
     Some(Placement { shown: shown(import, &from), from, to })
+}
+
+fn walk_dirs(dir: &Path, depth: u32, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    for e in entries.filter_map(|e| e.ok()) {
+        if e.file_type().is_ok_and(|t| t.is_dir()) && depth > 0 {
+            out.push(e.path());
+            walk_dirs(&e.path(), depth - 1, out);
+        }
+    }
 }
 
 fn walk(dir: &Path, depth: u32, out: &mut Vec<PathBuf>) {
@@ -347,20 +396,30 @@ fn walk(dir: &Path, depth: u32, out: &mut Vec<PathBuf>) {
 /// Move `p` into place: a folder's files merged into the target folder (the user's
 /// copy wins over files of the same name), then what is left of it removed.
 pub fn place(card: &Path, p: &Placement) -> io::Result<usize> {
+    if !crate::index::card_path(&p.to) || p.to.is_empty() {
+        return Err(io::Error::other(format!("{}: not a place on the card", p.to)));
+    }
     let to = card.join(&p.to);
+    // Moved over a file of the same name: replaced only once the move can be made.
+    let put = |from: &Path, dest: &Path| -> io::Result<()> {
+        fs::create_dir_all(dest.parent().unwrap())?;
+        match fs::rename(from, dest) {
+            Ok(()) => Ok(()),
+            Err(_) if dest.exists() => {
+                fs::remove_file(dest)?;
+                fs::rename(from, dest)
+            }
+            Err(e) => Err(e),
+        }
+    };
     if p.from.is_file() {
-        fs::create_dir_all(to.parent().unwrap())?;
-        let _ = fs::remove_file(&to);
-        fs::rename(&p.from, &to)?;
+        put(&p.from, &to)?;
         return Ok(1);
     }
     let mut files = Vec::new();
     walk(&p.from, 32, &mut files);
     for f in &files {
-        let dest = to.join(f.strip_prefix(&p.from).unwrap());
-        fs::create_dir_all(dest.parent().unwrap())?;
-        let _ = fs::remove_file(&dest);
-        fs::rename(f, &dest)?;
+        put(f, &to.join(f.strip_prefix(&p.from).unwrap()))?;
     }
     let _ = fs::remove_dir_all(&p.from);
     unsafe { libc::sync() };

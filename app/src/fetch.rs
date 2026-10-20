@@ -40,7 +40,10 @@ impl Fetcher {
             return fs::rename(part, to);
         }
         let mut cmd = Command::new(&self.curl);
-        cmd.args(["-fsSL", "--connect-timeout", "20", "--retry", "2", "-A", "PortStore"]);
+        // A transfer stalled for 30 s (Wi-Fi gone mid-way) ends as code 28, "no
+        // connection", instead of hanging.
+        cmd.args(["-fsSL", "--connect-timeout", "20", "--speed-limit", "1", "--speed-time", "30"]);
+        cmd.args(["--retry", "2", "-A", "PortStore"]);
         if let Some(ca) = &self.cacert {
             cmd.arg("--cacert").arg(ca);
         }
