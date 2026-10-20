@@ -15,6 +15,9 @@ use crate::index::Port;
 pub struct Installed {
     pub id: String,
     pub version: String,
+    /// The release's date (YYYY-MM-DD), when known: a catalog of an older one is no update.
+    #[serde(default)]
+    pub date: String,
     /// Files put on the card, from its root.
     pub files: Vec<String>,
     /// Shortcuts for Onion's Ports Collection: ~Import ports has to look at them.
@@ -69,12 +72,14 @@ pub fn made_shortcut(root: &Path, port: &Port) -> Vec<(String, Vec<u8>)> {
         .map(|c| if matches!(c, '/' | '\\' | '"' | ':' | '*' | '?' | '<' | '>' | '|') { ' ' } else { c })
         .collect();
     let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
+    let check_dir = if sc.dir.is_empty() { dir } else { sc.dir.as_str() };
+    let check_file = if sc.data.is_empty() { launch } else { sc.data.as_str() };
     let text = format!(
         "#!/bin/sh\n\
          # {name}: made by Port Store for Onion's Ports; the game is in {dir}.\n\
          GameName=\"{name}\"\n\
-         GameDir=\"../../../{dir}\"\n\
-         GameDataFile=\"{launch}\"\n\
+         GameDir=\"../../../{check_dir}\"\n\
+         GameDataFile=\"{check_file}\"\n\
          cd \"/mnt/SDCARD/{dir}\" || exit 1\n\
          # Sound through Onion's audioserver, as Apps have it.\n\
          if pgrep audioserver > /dev/null 2>&1 && [ -f /mnt/SDCARD/miyoo/lib/libpadsp.so ]; then\n\
@@ -196,6 +201,25 @@ impl Card {
         archive_path: &Path,
         progress: &mut dyn FnMut(Step),
     ) -> io::Result<Installed> {
+        // A 7z archive is unpacked whole by 7-Zip first, then read as a folder.
+        if port.file.kind == "7z" {
+            let raw = self.home.join("cache").join(format!("7z-{}", port.id));
+            let free = free_bytes(&self.root);
+            if free.is_some_and(|free| free < 2 * port.install.bytes + (8 << 20)) {
+                return Err(io::Error::other(format!(
+                    "not enough space: about {} needed to unpack, {} free",
+                    crate::size(2 * port.install.bytes),
+                    crate::size(free.unwrap())
+                )));
+            }
+            progress(Step::Unpack { done: 0, total: 0 });
+            archive::unpack_7z(archive_path, &raw)?;
+            let mut as_dir = port.clone();
+            as_dir.file.kind = "dir".into();
+            let done = self.install(&as_dir, &raw, progress);
+            let _ = remove_tree(&raw);
+            return done;
+        }
         let members = archive::members(archive_path, &port.file.kind)?;
         let wanted: Vec<&archive::Member> = members
             .iter()
@@ -299,6 +323,7 @@ impl Card {
         let rec = Installed {
             id: port.id.clone(),
             version: port.version.clone(),
+            date: port.date.clone(),
             shortcuts: files.iter().any(|f| f.starts_with("Roms/PORTS/Shortcuts/")),
             files,
         };

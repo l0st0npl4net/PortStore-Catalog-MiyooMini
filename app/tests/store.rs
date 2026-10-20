@@ -567,6 +567,9 @@ fn the_newest_catalog_at_hand_is_used() {
     assert_eq!(s.load_index().generated, "2026-10-21T00:00:00Z");
     write(card.join("App/PortStore/index.json"), "2026-10-22T00:00:00Z");
     assert_eq!(s.load_index().generated, "2026-10-22T00:00:00Z");
+    // Brought on a computer, for a Mini without Wi-Fi.
+    write(card.join("App/PortStore/downloads/index.json"), "2026-10-23T00:00:00Z");
+    assert_eq!(s.load_index().generated, "2026-10-23T00:00:00Z");
 }
 
 #[test]
@@ -581,7 +584,7 @@ fn a_game_released_as_an_app_gets_a_ports_shortcut_and_leaves_apps() {
     p.strip = String::new();
     p.into = "App/Petals/".into();
     p.skip = vec!["App/Petals/config.json".into()];
-    p.shortcut = Some(Shortcut { launch: "App/Petals/launch.sh".into(), image: "App/Petals/icon.png".into() });
+    p.shortcut = Some(Shortcut { launch: "App/Petals/launch.sh".into(), image: "App/Petals/icon.png".into(), ..Default::default() });
     let rec = s.install(&p, &AtomicBool::new(false), &mut |_| {}).unwrap();
     assert!(!card.join("App/Petals/config.json").exists(), "not in Apps");
     let sc = fs::read_to_string(card.join("Roms/PORTS/Shortcuts/Petals Around the Rose.port")).unwrap();
@@ -628,7 +631,7 @@ fn a_catalog_that_now_skips_a_file_or_makes_a_shortcut_is_followed_on_start() {
     let _ = fs::remove_file(card.join("App/PortStore/cache/import"));
     let mut p2 = port("game", &z, "1.0");
     p2.skip = vec!["App/Game/config.json".into()];
-    p2.shortcut = Some(Shortcut { launch: "App/Game/launch.sh".into(), image: String::new() });
+    p2.shortcut = Some(Shortcut { launch: "App/Game/launch.sh".into(), ..Default::default() });
     s.repair(&Index { format: 1, ports: vec![p2.clone()], ..Index::default() });
     assert!(!card.join("App/Game/config.json").exists());
     assert!(card.join("Roms/PORTS/Shortcuts/Game.port").exists());
@@ -681,4 +684,98 @@ fn a_release_laid_out_otherwise_is_mapped_onto_the_card() {
     assert!(card.join("Roms/PORTS/Games/Game/game").exists());
     assert!(!card.join("README.txt").exists());
     assert_eq!(rec.files.len(), 2);
+}
+
+fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let path = dir.join(name);
+    fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+#[test]
+fn without_a_connection_the_file_is_listed_for_a_computer() {
+    let card = temp("offline-list");
+    let src = temp("offline-list-src");
+    let mut s = store(&card);
+    // curl as on a Mini without Wi-Fi: "could not resolve host".
+    s.fetcher.curl = script(&src, "curl", "exit 6");
+    s.index_url = "https://example.org/index.json".into();
+    let z = src.join("Game-1.0.zip");
+    zip(&z, &[("Game-1.0/App/Game/launch.sh", b"x", false)]);
+    let mut a = port("a", &z, "1.0");
+    a.file.url = "https://example.org/a/Game-1.0.zip".into();
+    let err = s.install(&a, &AtomicBool::new(false), &mut |_| {}).unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::NotConnected);
+    assert!(err.to_string().contains("to-download.txt"), "{err}");
+    let mut b = a.clone();
+    b.id = "b".into();
+    b.file.name = "Other-2.0.zip".into();
+    b.file.url = "https://example.org/b/Other-2.0.zip".into();
+    let _ = s.install(&b, &AtomicBool::new(false), &mut |_| {});
+    let list = fs::read_to_string(card.join("App/PortStore/downloads/to-download.txt")).unwrap();
+    assert!(list.contains("index.json:\n  https://example.org/index.json\n"), "{list}");
+    assert!(list.contains("File: Game-1.0.zip\n  https://example.org/a/Game-1.0.zip\n"), "{list}");
+    assert!(list.contains("File: Other-2.0.zip\n"), "both, the first kept: {list}");
+    // Brought: off the list, and installed from downloads/.
+    fs::copy(&z, card.join("App/PortStore/downloads/Game-1.0.zip")).unwrap();
+    s.install(&a, &AtomicBool::new(false), &mut |_| {}).unwrap();
+    s.list_for_computer(&[]);
+    let list = fs::read_to_string(card.join("App/PortStore/downloads/to-download.txt")).unwrap();
+    assert!(!list.contains("Game-1.0.zip"), "{list}");
+    assert!(list.contains("Other-2.0.zip"), "{list}");
+}
+
+#[test]
+fn a_7z_release_is_unpacked_by_7zip_and_installed() {
+    let card = temp("7z");
+    let src = temp("7z-src");
+    let s = store(&card);
+    // A stand-in for 7-Zip: "x -y -bd -o<dir> <file>", here a zip unpacked by unzip.
+    let seven = script(&src, "7z", r#"out=""; for a; do case "$a" in -o*) out="${a#-o}";; esac; file="$a"; done; unzip -q -o "$file" -d "$out""#);
+    std::env::set_var("PORTSTORE_7Z", &seven);
+    let z = src.join("OpenRCT2mini.7z");
+    zip(&z, &[("Roms/PORTS/Games/RCT/rct", b"elf", false), ("Roms/PORTS/Shortcuts/RCT.port", b"x", false), ("README", b"r", false)]);
+    let mut p = port("rct", &z, "0.3.0");
+    p.file.kind = "7z".into();
+    p.strip = String::new();
+    p.install.bytes = 4;
+    let rec = s.install(&p, &AtomicBool::new(false), &mut |_| {}).unwrap();
+    assert_eq!(rec.files.len(), 2);
+    assert!(card.join("Roms/PORTS/Games/RCT/rct").exists());
+    assert!(!card.join("README").exists());
+    assert!(!card.join("App/PortStore/cache/7z-rct").exists(), "the unpacked copy goes");
+}
+
+#[test]
+fn a_catalog_with_an_older_release_than_the_one_installed_is_no_update() {
+    let card = temp("older");
+    let src = temp("older-src");
+    let s = store(&card);
+    let z = src.join("Game-1.0.zip");
+    zip(&z, &[("Game-1.0/App/Game/launch.sh", b"x", false)]);
+    let mut new = port("game", &z, "v0.3.0");
+    new.date = "2026-10-21".into();
+    s.install(&new, &AtomicBool::new(false), &mut |_| {}).unwrap();
+    let mut old = new.clone();
+    old.version = "v0.2.0".into();
+    old.date = "2026-10-20".into();
+    assert_eq!(s.state(&old), State::Installed("v0.3.0".into()));
+    let mut newer = new.clone();
+    newer.version = "v0.4.0".into();
+    newer.date = "2026-10-25".into();
+    assert_eq!(s.state(&newer), State::Update("v0.3.0".into()));
+}
+
+#[test]
+fn versions_are_compared_by_their_numbers_then_by_date() {
+    use portstore::newer;
+    assert!(newer("v0.3.0", "", "v0.2.0", ""));
+    assert!(!newer("v0.2.0", "2026-10-20", "v0.3.0", "2026-10-20"), "a catalog behind the device");
+    assert!(newer("v0.10.0", "", "v0.9.1", ""));
+    assert!(newer("onion-v3", "", "onion-v2", ""));
+    assert!(newer("initial-release", "2026-11-01", "initial", "2026-10-01"));
+    assert!(!newer("initial-release", "2026-09-01", "initial", "2026-10-01"));
+    assert!(newer("nightly-b", "", "nightly-a", ""), "another, nothing to go by");
 }

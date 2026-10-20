@@ -1,4 +1,5 @@
-//! Reading release archives: zip (stored or deflated), tar and tar.gz. Members are
+//! Reading release archives: zip (stored or deflated), tar and tar.gz; and a folder
+//! ("dir": a 7z archive unpacked by 7-Zip, see `unpack_7z`). Members are
 //! regular files and folders; links are listed (`link`) but never read, and whether a
 //! path is safe to write (`safe_name`) is the installer's to check.
 use std::fs;
@@ -34,6 +35,7 @@ pub fn safe_name(name: &str) -> bool {
 pub fn members(path: &Path, kind: &str) -> io::Result<Vec<Member>> {
     match kind {
         "zip" => zip_members(&mut fs::File::open(path)?),
+        "dir" => dir_members(path),
         "tar" | "tar.gz" => {
             let mut out = Vec::new();
             tar_walk(path, kind, |m, _| {
@@ -66,8 +68,76 @@ pub fn extract(
             true => Ok(()),
             false => each(m, r),
         }),
+        "dir" => {
+            for m in dir_members(path)?.iter().filter(|m| !m.dir && !m.link) {
+                each(m, &mut fs::File::open(path.join(&m.name))?)?;
+            }
+            Ok(())
+        }
         _ => Err(bad(format!("cannot unpack a {kind} file"))),
     }
+}
+
+/// The files and folders under `root`, by name from it, links told (not followed).
+fn dir_members(root: &Path) -> io::Result<Vec<Member>> {
+    fn walk(root: &Path, dir: &Path, out: &mut Vec<Member>) -> io::Result<()> {
+        let mut entries: Vec<_> = fs::read_dir(dir)?.filter_map(|e| e.ok()).collect();
+        entries.sort_by_key(|e| e.file_name());
+        for e in entries {
+            let path = e.path();
+            let meta = fs::symlink_metadata(&path)?;
+            let rel = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().into_owned();
+            let dir = meta.is_dir();
+            out.push(Member {
+                name: if dir { format!("{rel}/") } else { rel },
+                size: if meta.is_file() { meta.len() } else { 0 },
+                dir,
+                link: meta.file_type().is_symlink(),
+                at: 0,
+                method: 0,
+                crc: 0,
+                packed: 0,
+            });
+            if dir {
+                walk(root, &path, out)?;
+            }
+        }
+        Ok(())
+    }
+    let mut out = Vec::new();
+    walk(root, root, &mut out)?;
+    Ok(out)
+}
+
+/// Unpack a 7z archive into `to` (made empty first) with 7-Zip: Onion's, or
+/// PORTSTORE_7Z. Its members are then those of `to`, as kind "dir".
+pub fn unpack_7z(archive: &Path, to: &Path) -> io::Result<()> {
+    let onion = Path::new("/mnt/SDCARD/.tmp_update/bin/7z");
+    let seven = match std::env::var_os("PORTSTORE_7Z") {
+        Some(p) => std::path::PathBuf::from(p),
+        None if onion.exists() => onion.to_path_buf(),
+        None => std::path::PathBuf::from("7z"),
+    };
+    let _ = fs::remove_dir_all(to);
+    fs::create_dir_all(to)?;
+    let mut out_dir = std::ffi::OsString::from("-o");
+    out_dir.push(to);
+    let done = std::process::Command::new(&seven)
+        .arg("x")
+        .arg("-y")
+        .arg("-bd")
+        .arg(out_dir)
+        .arg(archive)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .output()
+        .map_err(|e| bad(format!("{}: {e}", seven.display())))?;
+    if !done.status.success() {
+        let _ = fs::remove_dir_all(to);
+        let err = String::from_utf8_lossy(&done.stderr);
+        return Err(bad(format!("7-Zip could not unpack the file: {}", err.trim())));
+    }
+    Ok(())
 }
 
 fn u16_at(b: &[u8], at: usize) -> u16 {

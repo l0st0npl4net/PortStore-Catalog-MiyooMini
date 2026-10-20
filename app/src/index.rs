@@ -89,6 +89,12 @@ pub struct Shortcut {
     /// A picture of the port's, copied for the Ports list (App/Petals/icon.png).
     #[serde(default)]
     pub image: String,
+    /// What ~Import ports looks for before it shows the shortcut: a file `data` up to
+    /// two folders below `dir`. By default the launcher itself.
+    #[serde(default)]
+    pub dir: String,
+    #[serde(default)]
+    pub data: String,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, Default)]

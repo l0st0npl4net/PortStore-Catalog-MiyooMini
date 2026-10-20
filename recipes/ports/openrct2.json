@@ -1,0 +1,25 @@
+{
+  "id": "openrct2",
+  "catalog": "OpenRCT2",
+  "github": "scheeseman486/OpenRCT2mini",
+  "asset": "^OpenRCT2mini-[\\w.-]+\\.7z$",
+  "skip": [
+    "Roms/PORTS/Shortcuts/Simulation/OpenRCT2mini.port"
+  ],
+  "shortcut": {
+    "launch": "Roms/PORTS/Games/OpenRCT2mini/launch.sh",
+    "image": "Roms/PORTS/Imgs/OpenRCT2mini.png",
+    "dir": "Roms/PORTS/Games/OpenRCT2mini/rct2",
+    "data": "g1.dat"
+  },
+  "needs": [
+    {
+      "what": "Your RollerCoaster Tycoon 2 install",
+      "hint": "Copy its folders (Data, ObjData, Scenarios\u2026) into Roms/PORTS/Games/OpenRCT2mini/rct2.",
+      "check": [
+        "Roms/PORTS/Games/OpenRCT2mini/rct2/Data/g1.dat"
+      ]
+    }
+  ],
+  "about": "Low-spec build of OpenRCT2 for the Mini. Its own shortcut points Onion's import at the wrong place, so Port Store makes one that shows the game once rct2/Data/g1.dat is in place."
+}

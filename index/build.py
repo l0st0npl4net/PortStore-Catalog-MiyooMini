@@ -131,7 +131,7 @@ def sha256(path):
 
 def kind_of(name):
     low = name.lower()
-    for ext, kind in ((".zip", "zip"), (".tar.gz", "tar.gz"), (".tgz", "tar.gz"), (".tar", "tar")):
+    for ext, kind in ((".zip", "zip"), (".tar.gz", "tar.gz"), (".tgz", "tar.gz"), (".tar", "tar"), (".7z", "7z")):
         if low.endswith(ext):
             return kind
     return None
@@ -154,11 +154,25 @@ def sniff(path):
         return "tar.gz"
     if head[257:262] == b"ustar":
         return "tar"
+    if head.startswith(b"7z\xbc\xaf\x27\x1c"):
+        return "7z"
     return None
+
+
+def seven(path):
+    """A 7z archive, read with py7zr (pip install py7zr): the device unpacks it with
+    Onion's 7-Zip."""
+    import py7zr  # only for 7z releases
+
+    return py7zr.SevenZipFile(path)
 
 
 def entries(path, kind):
     """(name, size, is_dir, is_link) of every member."""
+    if kind == "7z":
+        with seven(path) as z:
+            return [(i.filename + ("/" if i.is_directory else ""), i.uncompressed or 0, i.is_directory,
+                     bool(getattr(i, "is_symlink", False))) for i in z.list()]
     if kind == "zip":
         with zipfile.ZipFile(path) as z:
             out = []
@@ -179,6 +193,9 @@ def dos_name(info):
 
 
 def read_member(path, kind, name):
+    if kind == "7z":
+        with seven(path) as z:
+            return next(iter(z.read([name]).values())).read()
     if kind == "zip":
         with zipfile.ZipFile(path) as z:
             return z.read(next(i for i in z.infolist() if dos_name(i) == name))
@@ -478,10 +495,14 @@ def main():
     except (OSError, ValueError, urllib.error.URLError) as e:
         raise SystemExit(f"catalog {args.catalog}: {e}")
     try:
-        previous = {p["id"]: p for p in (load_json(args.previous) or {}).get("ports", [])}
+        previous_index = load_json(args.previous) or {}
     except (OSError, ValueError, urllib.error.URLError) as e:
         log(f"previous index: {e}")
-        previous = {}
+        previous_index = {}
+    previous = {p["id"]: p for p in previous_index.get("ports", [])}
+    # A recipe failing since an earlier build (not just now: a host down for a minute).
+    previous_failed = {f["id"]: f for f in previous_index.get("failed", [])}
+    now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     gh = Github(os.environ.get("GITHUB_TOKEN"))
     site = Path(args.out).parent
     site.mkdir(parents=True, exist_ok=True)
@@ -494,8 +515,10 @@ def main():
             log(f"ok    {p['id']:24} {p['version']:20} {p['install']['files']:4} files"
                 + (f"  skipped {p['skipped']}" if p.get("skipped") else ""))
             ports.append(p)
-        except (ValueError, OSError, KeyError, urllib.error.URLError, zipfile.BadZipFile, tarfile.TarError) as e:
-            failed.append({"id": recipe["id"], "file": recipe["_file"], "error": str(e)})
+        except (ValueError, OSError, KeyError, ImportError, urllib.error.URLError, zipfile.BadZipFile,
+                tarfile.TarError) as e:
+            since = previous_failed.get(recipe["id"], {}).get("since", now)
+            failed.append({"id": recipe["id"], "file": recipe["_file"], "error": str(e), "since": since})
             if recipe["id"] in previous:
                 ports.append(previous[recipe["id"]])
                 keep_pictures(previous[recipe["id"]], args.previous, site)
@@ -513,7 +536,7 @@ def main():
         add_pictures(m, "m-" + slug(m["name"]), [lambda: m.get("image") and fetch(m["image"], cache)], site)
     index = {
         "format": FORMAT,
-        "generated": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "generated": now,
         "ports": sorted(ports, key=lambda p: p["name"].lower()),
         "manual": manual,
         "failed": failed,

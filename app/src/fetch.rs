@@ -69,7 +69,13 @@ impl Fetcher {
             if let Some(mut e) = child.stderr.take() {
                 let _ = e.read_to_string(&mut err);
             }
-            return Err(io::Error::other(curl_error(status.code(), err.trim())));
+            // No network at all (a Mini without Wi-Fi, Wi-Fi off): told apart, so the
+            // file can be listed for downloading on a computer.
+            let kind = match status.code() {
+                Some(6) | Some(7) | Some(28) => io::ErrorKind::NotConnected,
+                _ => io::ErrorKind::Other,
+            };
+            return Err(io::Error::new(kind, curl_error(status.code(), err.trim())));
         }
         progress(fs::metadata(&part).map(|m| m.len()).unwrap_or(0));
         fs::rename(part, to)

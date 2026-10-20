@@ -87,6 +87,8 @@ impl Item {
 #[derive(Clone, Debug)]
 enum Action {
     Install(String),
+    /// Several ports, one after another (marked ones, or every update).
+    InstallMany(Vec<String>),
     Remove(String),
     Refresh,
     /// Onion's Ports Collection, which Games > Ports needs.
@@ -110,11 +112,17 @@ enum Msg {
     Needs(String, Vec<Have>),
     Done(Result<Finished, String>),
     Index(Result<Index, String>),
+    /// The catalog downloaded on start, without a word on screen.
+    Quiet(Result<Index, String>),
+    /// The port a queue of installs is on: (place, of how many, name).
+    Queue(usize, usize, String),
 }
 
 /// A job done.
 enum Finished {
     Installed(String),
+    /// A queue: those installed, those not (with why).
+    Many(Vec<String>, Vec<(String, String)>),
     Removed,
     PortsCollection,
 }
@@ -140,6 +148,14 @@ pub struct App {
     pick: [usize; 5],
     top: [usize; 5],
     pictures: Pictures,
+    /// Ports marked (X) for installing together (Start).
+    marked: std::collections::BTreeSet<String>,
+    /// Newest releases first (R2), instead of A to Z.
+    newest: bool,
+    /// The catalog could not be downloaded on start (no Wi-Fi).
+    offline: bool,
+    /// Port Store has updated itself: start the new one on leaving.
+    pub restart: bool,
     view: View,
     /// Where to go back to from a message or a job.
     under: Vec<View>,
@@ -164,6 +180,10 @@ impl App {
             free: None,
             tab: Tab::Games,
             genre: None,
+            marked: Default::default(),
+            newest: false,
+            offline: false,
+            restart: false,
             pick: [0; 5],
             top: [0; 5],
             view: View::List,
@@ -215,7 +235,11 @@ impl App {
                 .collect(),
             Tab::More => return (0..self.index.manual.len()).map(Item::Manual).collect(),
         };
-        let grouped = matches!(self.tab, Tab::Games | Tab::Apps);
+        let grouped = matches!(self.tab, Tab::Games | Tab::Apps) && !self.newest;
+        if self.newest {
+            shown.sort_by(|(_, a), (_, b)| b.date.cmp(&a.date).then(a.name.to_lowercase().cmp(&b.name.to_lowercase())));
+            return shown.into_iter().map(|(i, _)| Item::Port(i)).collect();
+        }
         let key = |p: &Port| match grouped && !p.group.is_empty() {
             true => (p.group.to_lowercase(), p.name.to_lowercase()),
             false => (p.name.to_lowercase(), String::new()),
@@ -300,6 +324,9 @@ impl App {
             }
             View::Message { .. } => {
                 if matches!(key, Key::A | Key::B) {
+                    if self.restart {
+                        return Flow::Exit;
+                    }
                     self.back();
                 }
             }
@@ -349,6 +376,42 @@ impl App {
                 self.top[t] = 0;
             }
             Key::Y => self.start(Action::Refresh),
+            Key::R2 if self.tab != Tab::More => {
+                self.newest = !self.newest;
+                self.pick[t] = 0;
+                self.top[t] = 0;
+            }
+            Key::X if n > 0 => {
+                if let Item::Port(at) = items[pick] {
+                    let id = self.index.ports[at].id.clone();
+                    if !self.marked.remove(&id) {
+                        self.marked.insert(id);
+                    }
+                }
+            }
+            Key::Start if !self.marked.is_empty() => {
+                let ids: Vec<String> = self.marked.iter().cloned().collect();
+                let names: Vec<String> = ids.iter().filter_map(|id| self.port(id).map(|p| p.name.clone())).collect();
+                self.under.push(self.view.clone());
+                self.view = View::Confirm {
+                    text: format!("Install {} ports: {}?", ids.len(), names.join(", ")),
+                    yes: Action::InstallMany(ids),
+                };
+            }
+            Key::Select if self.tab == Tab::Updates && n > 0 => {
+                let ids: Vec<String> = items
+                    .iter()
+                    .filter_map(|i| match i {
+                        Item::Port(p) => Some(self.index.ports[*p].id.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                self.under.push(self.view.clone());
+                self.view = View::Confirm {
+                    text: format!("Update all {} ports?", ids.len()),
+                    yes: Action::InstallMany(ids),
+                };
+            }
             Key::A if n > 0 => match items[pick].clone() {
                 Item::Manual(at) => self.view = View::Manual { at, scroll: 0 },
                 Item::Port(at) => {
@@ -357,7 +420,7 @@ impl App {
                 }
                 Item::Heading(_) | Item::End => {}
             },
-            Key::B | Key::Start => return Flow::Exit,
+            Key::B => return Flow::Exit,
             _ => {}
         }
         Flow::Stay
@@ -453,6 +516,7 @@ impl App {
             Action::Remove(id) => format!("Removing {}", self.port(id).map_or(id.as_str(), |p| &p.name)),
             Action::Refresh => "Downloading the catalog".to_string(),
             Action::PortsCollection => "Adding Ports Collection".to_string(),
+            Action::InstallMany(ids) => format!("Installing {} ports", ids.len()),
         };
         if matches!(self.view, View::Confirm { .. }) {
             self.view = self.under.pop().unwrap_or(View::List);
@@ -461,7 +525,16 @@ impl App {
         self.view = View::Busy { title, step: None };
         let port = match &action {
             Action::Install(id) | Action::Remove(id) => self.port(id).cloned(),
-            Action::Refresh | Action::PortsCollection => None,
+            Action::Refresh | Action::PortsCollection | Action::InstallMany(_) => None,
+        };
+        let queue: Vec<Port> = match &action {
+            // Port Store itself last: what is left of the queue still runs on the old one.
+            Action::InstallMany(ids) => {
+                let mut q: Vec<Port> = ids.iter().filter_map(|id| self.port(id).cloned()).collect();
+                q.sort_by_key(|p| p.id == "portstore");
+                q
+            }
+            _ => Vec::new(),
         };
         std::thread::spawn(move || {
             let done = match action {
@@ -479,6 +552,23 @@ impl App {
                 }
                 Action::Remove(id) => store.remove(&id, port.as_ref()).map(|_| Finished::Removed),
                 Action::PortsCollection => store.add_ports_collection().map(|_| Finished::PortsCollection),
+                Action::InstallMany(_) => {
+                    let (mut done, mut failed) = (Vec::new(), Vec::new());
+                    for (n, port) in queue.iter().enumerate() {
+                        if cancel.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        let _ = tx.send(Msg::Queue(n + 1, queue.len(), port.name.clone()));
+                        match store.install(port, &cancel, &mut |step| {
+                            let _ = tx.send(Msg::Step(step));
+                        }) {
+                            Ok(_) => done.push(port.id.clone()),
+                            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => break,
+                            Err(e) => failed.push((port.id.clone(), e.to_string())),
+                        }
+                    }
+                    Ok(Finished::Many(done, failed))
+                }
             };
             let _ = tx.send(Msg::Done(done.map_err(|e| e.to_string())));
         });
@@ -498,6 +588,25 @@ impl App {
                     }
                 }
                 Msg::Checking(name) => self.checking = Some(name),
+                Msg::Queue(n, of, name) => {
+                    if let View::Busy { title, step } = &mut self.view {
+                        *title = format!("Installing {n} of {of}: {name}");
+                        *step = None;
+                    }
+                }
+                Msg::Quiet(result) => match result {
+                    Ok(index) => {
+                        self.offline = false;
+                        self.store.repair(&index);
+                        self.index = index;
+                        self.recount();
+                        self.offer_self_update();
+                    }
+                    Err(_) => {
+                        self.offline = true;
+                        self.offer_self_update();
+                    }
+                },
                 Msg::Needs(id, have) => {
                     self.checking = None;
                     self.needs.insert(id, have);
@@ -526,6 +635,7 @@ impl App {
                             "Games now has Ports. Port Store's games show there once it closes.",
                         ),
                         Ok(Finished::Installed(id)) => self.installed(&id),
+                        Ok(Finished::Many(done, failed)) => self.installed_many(done, failed),
                         Ok(Finished::Removed) => {
                             self.view = View::List;
                             self.message("Removed", "The port is off the card.");
@@ -538,11 +648,66 @@ impl App {
         }
     }
 
+    /// Download the catalog on start, quietly: the Updates tab stays true, and a new
+    /// Port Store is offered at once.
+    pub fn refresh_quietly(&mut self) {
+        if self.store.index_url.is_empty() {
+            return;
+        }
+        let store = self.store.clone();
+        let tx = self.jobs.0.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(Msg::Quiet(store.refresh(&AtomicBool::new(false))));
+        });
+    }
+
+    /// A newer Port Store in the catalog: offered once, over the list.
+    fn offer_self_update(&mut self) {
+        let Some(me) = self.port("portstore").cloned() else { return };
+        let State::Update(have) = self.state("portstore") else { return };
+        if !matches!(self.view, View::List) || self.busy {
+            return;
+        }
+        self.under.push(self.view.clone());
+        self.view = View::Confirm {
+            text: format!(
+                "Port Store {} is out (this one is {have}). Update now? It starts again by itself.",
+                me.version
+            ),
+            yes: Action::Install(me.id),
+        };
+    }
+
+    fn installed_many(&mut self, done: Vec<String>, failed: Vec<(String, String)>) {
+        self.marked.retain(|id| !done.contains(id));
+        let name = |id: &str| self.port(id).map_or(id.to_string(), |p| p.name.clone());
+        let mut text = format!("{} installed.", done.len());
+        if !failed.is_empty() {
+            let why: Vec<String> = failed.iter().map(|(id, e)| format!("{}: {e}", name(id))).collect();
+            text += &format!(" Not installed: {}", why.join(" "));
+        }
+        let waiting: Vec<String> = done
+            .iter()
+            .filter_map(|id| self.port(id))
+            .filter(|p| !p.needs.is_empty())
+            .map(|p| p.name.clone())
+            .collect();
+        if !waiting.is_empty() {
+            text += &format!(" Still needing your files: {}.", waiting.join(", "));
+        }
+        if done.iter().any(|id| id == "portstore") {
+            self.restart = true;
+            text += " Port Store itself was updated: it starts again now.";
+        }
+        self.message("Done", &text);
+    }
+
     fn installed(&mut self, id: &str) {
         let Some(port) = self.port(id).cloned() else { return };
         self.needs.remove(id);
         if id == "portstore" {
-            let text = format!("Port Store {} is on the card: close it and start it again.", port.version);
+            self.restart = true;
+            let text = format!("Port Store {} is on the card. It starts again now.", port.version);
             return self.message("Updated", &text);
         }
         let mut text = format!("{} {} is on the card.", port.name, port.version);
@@ -703,9 +868,14 @@ impl App {
                     };
                     let lw = c.width(15, &label);
                     self.row(c, y, at == pick, &port.name, &port.thumb, W as i32 - 130 - lw);
+                    if self.marked.contains(&port.id) {
+                        c.rounded(52, y + 30, 18, 18, 9, ACCENT);
+                        c.text(55, y + 30, 14, 0x0d1117, "✓");
+                    }
                     // Under a heading the group goes without saying.
                     let grouped = matches!(self.tab, Tab::Games | Tab::Apps) && !port.group.is_empty();
                     let sub = join(&[
+                        if self.newest { port.date.clone() } else { String::new() },
                         if port.group.is_empty() || grouped { port.categories.join(", ") } else { port.group.clone() },
                         port.status.clone(),
                         owned_word(&port.assets),
@@ -723,11 +893,18 @@ impl App {
             c.rounded(W as i32 - 12, y, 4, h, 2, PICK);
         }
         let free = self.free.map(|f| format!("{} free", size(f))).unwrap_or_default();
+        let sort = if self.newest { "R2 A-Z" } else { "R2 Newest" };
         let keys = match self.tab {
-            Tab::Games => "A Open  Select Genre  Y Refresh  L1/R1 Tabs  B Exit",
-            _ => "A Open   Y Refresh   L1/R1 Tabs   B Exit",
+            Tab::Games => format!("A Open  X Mark  Select Genre  {sort}  B Exit"),
+            Tab::Updates if !items.is_empty() => "A Open  Select Update all  L1/R1 Tabs  B Exit".to_string(),
+            Tab::More => "A Open   L1/R1 Tabs   B Exit".to_string(),
+            _ => format!("A Open  X Mark  {sort}  L1/R1 Tabs  B Exit"),
         };
-        footer(c, &join(&[self.index_date(), free]), keys);
+        let left = match self.marked.len() {
+            0 => join(&[self.index_date(), if self.offline { "offline".into() } else { free }]),
+            n => format!("{n} marked: Start installs"),
+        };
+        footer(c, &left, &keys);
     }
 
     /// A row's background, picture (the first letter of the name without one) and
@@ -939,6 +1116,7 @@ fn step_text(step: Option<&Step>) -> (String, Option<f32>) {
             Some(*done as f32 / (*total).max(1) as f32),
         ),
         Some(Step::Check) => ("Checking the file…".into(), None),
+        Some(Step::Unpack { total: 0, .. }) => ("Unpacking…".into(), None),
         Some(Step::Unpack { done, total }) => (
             format!("Unpacking {} of {}", size(*done), size(*total)),
             Some(*done as f32 / (*total).max(1) as f32),
@@ -986,8 +1164,9 @@ pub fn run(store: Store) -> Result<(), String> {
     }
     let mut input = input::Input::open();
     let mut app = App::new(store);
+    app.refresh_quietly();
     let mut canvas = Canvas::new(W, H);
-    loop {
+    'shown: loop {
         if app.dirty {
             app.draw(&mut canvas);
             fb.show(&canvas.px);
@@ -995,11 +1174,21 @@ pub fn run(store: Store) -> Result<(), String> {
         }
         for key in input.poll(Duration::from_millis(100)) {
             if app.key(key) == Flow::Exit && !app.busy {
-                return Ok(());
+                break 'shown;
             }
         }
         app.pump();
     }
+    if app.restart {
+        // Port Store has updated itself: the new program, in the place of this one.
+        use std::os::unix::process::CommandExt;
+        drop(fb);
+        // Not current_exe(): that is the replaced file, "portstore (deleted)".
+        let exe = app.store.card.home.join("portstore");
+        let err = std::process::Command::new(exe).args(std::env::args_os().skip(1)).exec();
+        return Err(format!("starting the new Port Store: {err}"));
+    }
+    Ok(())
 }
 
 /// Screens as PNGs, for looking at them off the device: the list in each tab, the
@@ -1123,6 +1312,36 @@ mod tests {
         app.key(Key::Down);
         app.key(Key::Down);
         assert_eq!(app.pick[0], 1, "and down past the heading to the first");
+    }
+
+    #[test]
+    fn newest_first_drops_the_groups() {
+        let mut app = app(&[("A", "G", &["x"]), ("B", "", &["x"]), ("C", "G", &["x"])]);
+        for (p, date) in app.index.ports.iter_mut().zip(["2026-01-01", "2026-03-01", "2026-02-01"]) {
+            p.date = date.into();
+        }
+        app.key(Key::R2);
+        assert_eq!(names(&app), ["B", "C", "A"]);
+        app.key(Key::R2);
+        assert_eq!(names(&app), ["B", "# G", "A", "C"]);
+    }
+
+    #[test]
+    fn x_marks_ports_and_start_installs_them_together() {
+        let mut app = app(&[("A", "", &["x"]), ("B", "", &["x"])]);
+        app.key(Key::X);
+        app.key(Key::Down);
+        app.key(Key::X);
+        app.key(Key::X);
+        app.key(Key::Up);
+        assert_eq!(app.marked.iter().cloned().collect::<Vec<_>>(), ["a"]);
+        app.key(Key::Down);
+        app.key(Key::X);
+        app.key(Key::Start);
+        match &app.view {
+            View::Confirm { yes: Action::InstallMany(ids), .. } => assert_eq!(ids, &["a", "b"]),
+            v => panic!("{v:?}"),
+        }
     }
 
     #[test]

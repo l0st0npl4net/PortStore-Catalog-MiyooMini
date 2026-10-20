@@ -32,8 +32,17 @@ under the Mozilla Public License 2.0: https://www.mozilla.org/MPL/2.0/
 TXT
 mkdir -p "$app/downloads"
 cat > "$app/downloads/README.txt" <<'TXT'
-No Wi-Fi? Download a port's release file on a computer (the file named on the
-port's page in Port Store) and put it here: Port Store installs it from here.
+No Wi-Fi? This folder is how Port Store gets files from a computer.
+
+1. In Port Store, try to install (or update) a port. Without a connection it writes
+   to-download.txt here: the address of the newest catalog and of each file wanted.
+2. On a computer, download them into this folder (App/PortStore/downloads on the
+   card), each under the name given in to-download.txt. Save the catalog as
+   index.json.
+3. Back in Port Store: the newer catalog is used at once (its Updates tab too), and
+   Install takes the file from here.
+
+A file stays here after installing: delete it to free space.
 TXT
 # Port Store's own install record, so the catalog's Port Store shows as installed
 # and its updates as updates (tools/release.sh makes the release of the same version).
@@ -42,6 +51,7 @@ mkdir -p "$app/installed"
 (cd "$out" && find App/PortStore -type f ! -path "App/PortStore/installed/*" | sort) | python3 -I -c '
 import json, sys
 files = [l.strip() for l in sys.stdin if l.strip()]
-print(json.dumps({"id": "portstore", "version": sys.argv[1], "files": files, "shortcuts": False}, indent=1))
-' "$version" > "$app/installed/portstore.json"
+print(json.dumps({"id": "portstore", "version": sys.argv[1], "date": sys.argv[2], "files": files,
+                  "shortcuts": False}, indent=1))
+' "$version" "$(date -u +%Y-%m-%d)" > "$app/installed/portstore.json"
 echo "packaged: $app ($version)"

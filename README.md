@@ -5,7 +5,7 @@ Install, update and remove ports right on a Miyoo Mini or Mini Plus running
 
 ![Games](docs/screenshots/games.png) ![A port's page](docs/screenshots/port.png)
 
-- **60 ports and apps**, including all 12 native N64 games of
+- **62 ports and apps**, including all 12 native N64 games of
   [Miyoo64](https://github.com/mr-finster/miyoo64) (Mario Kart 64, Super Mario 64, Ocarina
   of Time, GoldenEye 007…), Undertale, Fallout 1 and 2, Half-Life, Tomb Raider and apps
   like Moonlight, Syncthing or Better WiFi.
@@ -28,12 +28,40 @@ Install, update and remove ports right on a Miyoo Mini or Mini Plus running
 Needs Wi-Fi (Mini Plus) and the right date and time (Clock app) for secure downloads.
 Port Store draws for the 640×480 screen: the Mini v4 and Mini Flip are not supported yet.
 
-**Mini without Wi-Fi:** the catalog comes with Port Store. On a computer, download the file
-named on a port's page (`File: …`) from the port's release and put it in
-`App/PortStore/downloads` on the card; Port Store installs from there.
+**Mini without Wi-Fi** (or Wi-Fi off): Port Store works with files brought on a computer,
+through the folder `App/PortStore/downloads` on the card. See
+[Without Wi-Fi](#without-wi-fi) below.
 
 **Games → Ports** needs Onion's *Ports Collection*. If it is not on the card, Port Store
 offers to add it (as Package Manager would).
+
+## Without Wi-Fi
+
+The catalog that comes with Port Store is the one of its release; newer catalogs and the
+ports' files are brought on a computer.
+
+1. **Ask Port Store what it needs.** Pick the ports you want (X marks several, Start
+   installs them) or open the Updates tab and press Select. Without a connection Port Store
+   says so and writes `App/PortStore/downloads/to-download.txt`: the address of the newest
+   catalog, then a name and an address for each file:
+   ```
+   Newest catalog, saved here as index.json:
+     https://l0st0npl4net.github.io/PortStore-Catalog-MiyooMini/index.json
+
+   File: MarioKart64-miyoo.zip
+     https://github.com/mr-finster/miyoo64/releases/download/1.2.0/MarioKart64-miyoo.zip
+   ```
+2. **Download them on a computer** (card in a card reader, or copy them over later) into
+   `App/PortStore/downloads`, each under the name given. Save the catalog as `index.json`.
+3. **Back on the Mini**, open Port Store: it uses the newest catalog it has (the one it came
+   with, the one it downloaded, or `downloads/index.json`), so the Updates tab shows what is
+   new. Install as usual: the file is taken from `downloads` and checked against the
+   catalog's checksum. A file listed but not brought yet stays in `to-download.txt`.
+
+**Updates** the same way: bring the newest `index.json` first (step 2), and the Updates tab
+lists what changed; Select there, then the files it asks for.
+
+Files stay in `downloads` after installing: delete them to free space.
 
 ## Use
 
@@ -41,17 +69,19 @@ offers to add it (as Package Manager would).
 |---|---|
 | D-pad | move; Left / Right: a page |
 | L1 / R1 | tabs: Games, Apps, Installed, Updates, More |
-| Select | Games: next genre |
 | A | open a port; on its page: install, update or reinstall |
-| X | remove (on the page of an installed port) |
-| Y | list: download the newest catalog; page: check your files again |
+| X | list: mark a port (Start installs the marked ones); page: remove |
+| Start | install the marked ports, one after another |
+| Select | Games: next genre; Updates: update all |
+| R2 | newest releases first / A to Z |
+| Y | list: download the newest catalog again; page: check your files again |
 | B | back; on the list: quit |
 
 - **More** lists ports Port Store cannot install yet, with a link to their page.
 - Removing a port takes away the files Port Store put on the card. Your saves, settings and
   game files stay.
-- Port Store updates itself: it shows up under Updates when a new release is out. Start it
-  again afterwards.
+- The catalog is downloaded each time Port Store starts. When a new Port Store is out, it
+  offers to update itself at once and starts again by itself.
 
 Troubleshooting: Port Store writes `App/PortStore/cache/portstore.log`; Onion's import of
 ports writes `Roms/PORTS/import.log`.
@@ -108,9 +138,13 @@ Only the ports' pictures are published with the index (`img/`: 48×48 for the li
 | `into` | a folder the whole archive goes into (an app zipped without its `App/<Name>/`) |
 | `map` | `[from, to]` prefixes for releases laid out otherwise (`["Games/", "Roms/PORTS/Games/"]`); the first match wins, the rest is left out |
 | `skip` | card paths not installed though the release has them (`App/<Game>/config.json`: a game in Games → Ports only, not in Apps) |
-| `shortcut` | `{ "launch": "App/X/launch.sh", "image": "App/X/icon.png" }`: Port Store makes an Onion Ports shortcut for a game released as an app |
+| `shortcut` | `{ "launch": "App/X/launch.sh", "image": "App/X/icon.png", "dir": …, "data": … }`: Port Store makes an Onion Ports shortcut (for a game released as an app, or one whose own shortcut does not work); `~Import ports` shows it once `data` is up to two folders below `dir` (default: the launcher) |
 | `keep` | files of the release the user changes (settings): installed once, then never overwritten or removed (prefix if it ends in `/`). Files the release does not have (saves, game data) are never touched anyway |
 | `needs` | what the user brings: `what`, `hint`, `check` (paths that exist once it is in place), or a ROM by `sha1` looked for in `search` (`n64`: any byte order; `title`: header title, to tell another version of the same game). Game data checks are also read from the release's Onion shortcuts |
+
+Releases may be zip, tar, tar.gz or 7z (the build reads 7z with py7zr, the device unpacks it
+with Onion's 7-Zip). A recipe failing in two builds in a row opens (or updates) the issue
+"Recipes failing"; it closes by itself once they build again.
 
 Build the index locally (without `GITHUB_TOKEN`, releases are read from github.com pages):
 
