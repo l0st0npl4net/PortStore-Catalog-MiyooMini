@@ -31,8 +31,10 @@ Port Store hosts no ports: only the catalog and its pictures are on GitHub Pages
 | `index/build.py` | the catalog builder (Python 3, standard library; Pillow for pictures, py7zr for 7z) |
 | `index/prune_cache.py` | drops cached release files the catalog no longer names |
 | `index/report.py` | keeps the "Recipes failing" issue up to date (CI only) |
+| `index/check_recipes.py` | checks and builds given recipes, reports in Markdown (pull requests) |
 | `.github/workflows/index.yml` | builds and publishes the catalog |
 | `.github/workflows/release.yml` | starts `index.yml` when a Port Store release is published |
+| `.github/workflows/recipes.yml` | checks the recipes a pull request adds or changes, and comments the result |
 | `app/` | Port Store (Cargo project, Rust 1.96 from `app/rust-toolchain.toml`) |
 | `app/dist/` | files packaged with Port Store: `launch.sh`, OnionOS app `config.json`, the MiyooPorts system |
 | `assets/` | font (DejaVu Sans), Port Store and MiyooPorts icons |
@@ -118,6 +120,15 @@ wins), `ports`, `manual`, `failed`. A port:
 New fields must be optional on the device (`#[serde(default)]`), so older Port Stores keep
 reading new catalogs; a change older ones cannot read needs `format` 2.
 
+### Recipes in pull requests
+
+`recipes.yml` runs `index/check_recipes.py` on the recipe files a pull request adds or
+changes: fields (unknown ones, `id`, `github`, regular expressions, `needs`, `map`), the
+`catalog` name, then the same build as the catalog's (release, download, layout, needs,
+pictures). The report goes to the run's summary and as a comment on the pull request
+(edited on later pushes; pull requests from forks may not comment, the summary is there). The
+check fails when a recipe does.
+
 ### Adding a port
 
 1. Look at the release file's layout (`unzip -l`, `tar tzf`).
@@ -141,15 +152,17 @@ reading new catalogs; a change older ones cannot read needs `format` 2.
 | `archive.rs` | zip (stored, deflate; CRC checked), tar, tar.gz readers of its own; 7z unpacked whole by OnionOS's 7-Zip into a folder, then read as one |
 | `install.rs` | `Card`: placing a port's files, install records, updates, removal, `conform` (bringing installed ports in line with how Port Store installs now) |
 | `miyooports.rs` | the MiyooPorts system: where Ports files are kept hidden, launchers, the system's files |
-| `needs.rs` | what the user brings: files in place (as `~Import ports` finds them), N64 ROMs by SHA-1 in any byte order (cached in `cache/roms.json`) |
+| `needs.rs` | what the user brings: files in place (as `~Import ports` finds them), N64 ROMs by SHA-1 in any byte order (cached in `cache/roms.json`); files brought into `import/` and where they go |
 | `ui/mod.rs` | the screens: `App` (state, keys, jobs, drawing), tabs, lists, a port's page, dialogs |
 | `ui/fb.rs`, `ui/input.rs` | the framebuffer (640×480, turned half a turn, 2 pages) and the buttons (evdev) |
 | `ui/canvas.rs` | drawing: rectangles, text (fontdue, DejaVu Sans), pictures, PNG output |
 | `ui/pictures.rs` | pictures: bundled, cached or downloaded on a thread of their own |
 
 No SDL: Port Store draws into a buffer and copies it to the framebuffer, and reads the buttons
-from `/dev/input/event*`. It only works at 640×480 (the Mini and Mini Plus); the Mini v4 and
-Flip (752×560) need the layout to follow the screen size.
+from `/dev/input/event*`. The layout follows the framebuffer's size (640×480 at least): the
+`full_resolution` file next to the program makes OnionOS give apps the panel's own 752×560 on
+the Mini v4 and Flip, and the lists get wider and longer. `PORTSTORE_SHOT_SIZE=752x560` makes
+`shots` draw that size.
 
 ### Threads
 
@@ -169,6 +182,7 @@ App/PortStore/
   index.json, img/                    the catalog and pictures it was released with
   cacert.pem, licenses/
   installed/<id>.json                 per port: version, date, every file put on the card
+  import/                             game files brought on a computer, in any layout
   downloads/                          release files and index.json brought on a computer;
                                       to-download.txt, what Port Store asks for
   cache/                              last catalog, pictures, ROM checksums, log, staging
@@ -234,6 +248,25 @@ MiyooPorts, launchers are made or brought up to date (written only when they dif
   is offered at once; once installed (over the running program, which keeps running from the
   replaced file), Port Store starts the new one with `exec`. `settings.json` is `keep`.
 
+### Game files from `import/`
+
+For each missing need, `needs::importable` looks in `import/` (6 levels deep): for a `check`
+path `D/f`, the shallowest file named `f` (any case), found as `X/f`; the contents of `X` go
+into `D`. When `X` and `D` end in the same folder names (any case), both go that many levels
+up, as long as `X` stays a folder of its own in `import/`, so "RollerCoaster Tycoon 2/Data/
+G1.DAT" for `…/OpenRCT2mini/rct2/Data/g1.dat` moves the whole RCT2 folder as `rct2`. A ROM
+need takes a ROM of the right SHA-1, moved into the first `search` folder. `needs::place`
+moves file by file (the user's copy replaces files of the same name) and removes what is left
+of the folder. Recipes should name a file in the game's own layout in `check` (Half-Life:
+`valve/liblist.gam`), so the folder lands where the port wants it.
+
+### Updates in Apps
+
+After each look at the catalog, `Store::note_updates` writes the number of updates into Port
+Store's `description` in its `config.json` ("Install and update ports · 3 updates"), which
+MainUI shows under its name in Apps; the file is rewritten only when the line changes, keeping
+keys OnionOS's icon packs set.
+
 ### Without Wi-Fi
 
 When curl reports no connection (codes 6, 7, 28), Port Store writes
@@ -288,9 +321,6 @@ install record for Port Store.
 
 ## Open items
 
-- Mini v4 and Mini Flip: a layout for 752×560.
-- Recipes sent as pull requests: build only the changed recipe and comment the result.
-- Help with game files: copy a PC game folder into one place, Port Store puts the files where
-  the port wants them.
-- The number of updates in Port Store's description in Apps.
+- Mini v4 and Mini Flip: checked on screenshots only; needs a try on the devices.
+- The number of updates shows once Port Store has run; a check at boot would show it sooner.
 - Releases made of several files (Super Haxagon), `.ipk` packages.

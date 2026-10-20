@@ -1,0 +1,43 @@
+# A pull request that adds or changes recipes: each is checked and built as the
+# catalog would build it, and the result is written in the pull request (and in the
+# run's summary, for pull requests from forks, which may not comment).
+name: recipes
+
+on:
+  pull_request:
+    paths: ["recipes/**"]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pillow==11.3.0 py7zr==0.22.0
+      - name: Check the changed recipes
+        id: check
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          changed=$(git diff --name-only --diff-filter=AM "origin/${{ github.base_ref }}...HEAD" -- 'recipes/*.json' 'recipes/**/*.json')
+          set +e
+          python3 index/check_recipes.py $changed > report.md
+          status=$?
+          set -e
+          cat report.md >> "$GITHUB_STEP_SUMMARY"
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+      - name: Comment
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh pr comment "${{ github.event.pull_request.number }}" --body-file report.md --edit-last || gh pr comment "${{ github.event.pull_request.number }}" --body-file report.md
+      - if: steps.check.outputs.status != '0'
+        run: exit 1

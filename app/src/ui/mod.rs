@@ -18,6 +18,8 @@ use canvas::Canvas;
 use input::Key;
 use pictures::Pictures;
 
+/// The screen Port Store is laid out for at least: the Mini's. Larger ones (the
+/// Mini v4 and Flip, 752x560) get the same layout, wider and with more rows.
 pub const W: usize = 640;
 pub const H: usize = 480;
 
@@ -32,13 +34,11 @@ const WARN: u32 = 0xf0a64a;
 const BAD: u32 = 0xef6b6b;
 
 const TOP: i32 = 56;
-const FOOT: i32 = 444;
 /// A port's row, and a group's heading above its ports.
 const ROW: i32 = 54;
 const HEADING: i32 = 30;
 const END: i32 = 12;
-/// The list's own space, and how many ports Left / Right move by.
-const AREA: i32 = FOOT - TOP - 6;
+/// How many ports Left / Right move by.
 const PAGE: usize = 6;
 const THUMB: i32 = 46;
 
@@ -87,6 +87,8 @@ impl Item {
 #[derive(Clone, Debug)]
 enum Action {
     Install(String),
+    /// Move the game files found in import/ for a port into place.
+    Place(String),
     /// Several ports, one after another (marked ones, or every update).
     InstallMany(Vec<String>),
     Remove(String),
@@ -107,7 +109,7 @@ enum Msg {
     Step(Step),
     /// A ROM being read to check a port's needs.
     Checking(String),
-    Needs(String, Vec<Have>),
+    Needs(String, Vec<Have>, Vec<Option<needs::Placement>>),
     Done(Result<Finished, String>),
     Index(Result<Index, String>),
     /// The catalog downloaded on start, without a word on screen.
@@ -119,6 +121,8 @@ enum Msg {
 /// A job done.
 enum Finished {
     Installed(String),
+    /// Files moved from import/ for a port: how many.
+    Placed(String, usize),
     /// A queue: those installed, those not (with why).
     Many(Vec<String>, Vec<(String, String)>),
     Removed,
@@ -135,6 +139,8 @@ pub struct App {
     index: Index,
     states: HashMap<String, State>,
     needs: HashMap<String, Vec<Have>>,
+    /// Per port: game files found in import/ for its missing needs.
+    imports: HashMap<String, Vec<Option<needs::Placement>>>,
     /// The ROM being read for a check of needs.
     checking: Option<String>,
     free: Option<u64>,
@@ -173,6 +179,7 @@ impl App {
             index,
             states: HashMap::new(),
             needs: HashMap::new(),
+            imports: HashMap::new(),
             checking: None,
             free: None,
             tab: Tab::Games,
@@ -202,6 +209,8 @@ impl App {
             .map(|p| (p.id.clone(), self.store.state(p)))
             .collect();
         self.free = free_bytes(&self.store.card.root);
+        let updates = self.states.values().filter(|s| matches!(s, State::Update(_))).count();
+        self.store.note_updates(updates);
         self.dirty = true;
     }
 
@@ -472,6 +481,18 @@ impl App {
                 self.needs.remove(&id);
                 self.check_needs(id);
             }
+            Key::Start if self.imports.get(&id).is_some_and(|f| f.iter().any(|p| p.is_some())) => {
+                let moves: Vec<String> = self.imports[&id]
+                    .iter()
+                    .flatten()
+                    .map(|p| format!("{} → {}", p.shown, p.to))
+                    .collect();
+                self.under.push(self.view.clone());
+                self.view = View::Confirm {
+                    text: format!("Move your files into place? {}", moves.join("; ")),
+                    yes: Action::Place(id),
+                };
+            }
 
             _ => {}
         }
@@ -489,7 +510,8 @@ impl App {
                 let name = path.file_name().unwrap_or_default().to_string_lossy();
                 let _ = tx.send(Msg::Checking(name.into_owned()));
             });
-            let _ = tx.send(Msg::Needs(id, have));
+            let found = needs::importable(&store.card.home, &port, &have, &mut roms);
+            let _ = tx.send(Msg::Needs(id, have, found));
         });
     }
 
@@ -507,6 +529,7 @@ impl App {
             Action::Remove(id) => format!("Removing {}", self.port(id).map_or(id.as_str(), |p| &p.name)),
             Action::Refresh => "Downloading the catalog".to_string(),
             Action::InstallMany(ids) => format!("Installing {} ports", ids.len()),
+            Action::Place(_) => "Putting your files in place".to_string(),
         };
         if matches!(self.view, View::Confirm { .. }) {
             self.view = self.under.pop().unwrap_or(View::List);
@@ -515,7 +538,11 @@ impl App {
         self.view = View::Busy { title, step: None };
         let port = match &action {
             Action::Install(id) | Action::Remove(id) => self.port(id).cloned(),
-            Action::Refresh | Action::InstallMany(_) => None,
+            Action::Refresh | Action::InstallMany(_) | Action::Place(_) => None,
+        };
+        let placements: Vec<needs::Placement> = match &action {
+            Action::Place(id) => self.imports.get(id).into_iter().flatten().flatten().cloned().collect(),
+            _ => Vec::new(),
         };
         let queue: Vec<Port> = match &action {
             // Port Store itself last: what is left of the queue still runs on the old one.
@@ -541,6 +568,10 @@ impl App {
                         .map(|_| Finished::Installed(port.id.clone()))
                 }
                 Action::Remove(id) => store.remove(&id, port.as_ref()).map(|_| Finished::Removed),
+                Action::Place(id) => placements
+                    .iter()
+                    .try_fold(0, |n, p| needs::place(&store.card.root, p).map(|m| n + m))
+                    .map(|n| Finished::Placed(id, n)),
                 Action::InstallMany(_) => {
                     let (mut done, mut failed) = (Vec::new(), Vec::new());
                     for (n, port) in queue.iter().enumerate() {
@@ -596,8 +627,9 @@ impl App {
                         self.offer_self_update();
                     }
                 },
-                Msg::Needs(id, have) => {
+                Msg::Needs(id, have, found) => {
                     self.checking = None;
+                    self.imports.insert(id.clone(), found);
                     self.needs.insert(id, have);
                 }
                 Msg::Index(result) => {
@@ -620,6 +652,12 @@ impl App {
                     self.recount();
                     match result {
                         Ok(Finished::Installed(id)) => self.installed(&id),
+                        Ok(Finished::Placed(id, n)) => {
+                            self.needs.remove(&id);
+                            self.imports.remove(&id);
+                            self.check_needs(id);
+                            self.message("Done", &format!("{n} files moved into place."));
+                        }
                         Ok(Finished::Many(done, failed)) => self.installed_many(done, failed),
                         Ok(Finished::Removed) => {
                             self.view = View::List;
@@ -761,9 +799,9 @@ impl App {
     }
 
     fn draw_list(&mut self, c: &mut Canvas) {
-        c.fill(0, 0, W as i32, TOP - 8, PANEL);
+        c.fill(0, 0, c.w as i32, TOP - 8, PANEL);
         c.text(20, 12, 24, TEXT, "Port Store");
-        let mut x = W as i32 - 12;
+        let mut x = c.w as i32 - 12;
         for (tab, name) in TABS.iter().rev() {
             let label = match tab {
                 Tab::Updates => {
@@ -794,7 +832,7 @@ impl App {
         if pick == top && top > 0 && matches!(items[top - 1], Item::Heading(_)) {
             top -= 1;
         }
-        while top < pick && items[top..=pick].iter().map(Item::height).sum::<i32>() > AREA {
+        while top < pick && items[top..=pick].iter().map(Item::height).sum::<i32>() > area(c) {
             top += 1;
         }
         self.top[t] = top;
@@ -807,28 +845,28 @@ impl App {
                 Tab::Games => "The catalog is empty: press Y to download it.",
             };
             let w = c.width(18, text);
-            c.text((W as i32 - w) / 2, 220, 18, DIM, text);
+            c.text((c.w as i32 - w) / 2, 220, 18, DIM, text);
         }
         let mut y = TOP;
         let mut last = top;
         for (at, item) in items.iter().enumerate().skip(top) {
-            if y + item.height() > TOP + AREA {
+            if y + item.height() > TOP + area(c) {
                 break;
             }
             last = at;
             match item {
-                Item::End => c.fill(20, y + END / 2, W as i32 - 48, 1, PICK),
+                Item::End => c.fill(20, y + END / 2, c.w as i32 - 48, 1, PICK),
                 Item::Heading(name) => {
                     c.text(20, y + 8, 15, ACCENT, name);
                     let w = c.width(15, name);
-                    c.fill(30 + w, y + 17, W as i32 - 58 - w, 1, PICK);
+                    c.fill(30 + w, y + 17, c.w as i32 - 58 - w, 1, PICK);
                 }
                 Item::Manual(m) => {
                     let m = self.index.manual[*m].clone();
                     self.row(c, y, at == pick, &m.name, &m.thumb, 420);
                     let sub = join(&[m.categories.join(", "), m.status.clone(), owned_word(&m.assets)]);
                     c.text_fit(76, y + 29, 13, DIM, &sub, 440);
-                    c.text_right(W as i32 - 34, y + 16, 14, DIM, "by hand");
+                    c.text_right(c.w as i32 - 34, y + 16, 14, DIM, "by hand");
                 }
                 Item::Port(p) => {
                     let port = self.index.ports[*p].clone();
@@ -839,7 +877,7 @@ impl App {
                         State::Absent => (size(port.file.size), DIM),
                     };
                     let lw = c.width(15, &label);
-                    self.row(c, y, at == pick, &port.name, &port.thumb, W as i32 - 130 - lw);
+                    self.row(c, y, at == pick, &port.name, &port.thumb, c.w as i32 - 130 - lw);
                     if self.marked.contains(&port.id) {
                         c.rounded(52, y + 30, 18, 18, 9, ACCENT);
                         c.text(55, y + 30, 14, 0x0d1117, "✓");
@@ -852,17 +890,17 @@ impl App {
                         port.status.clone(),
                         owned_word(&port.assets),
                     ]);
-                    c.text_fit(76, y + 29, 13, DIM, &sub, W as i32 - 130 - lw);
-                    c.text_right(W as i32 - 34, y + 16, 15, color, &label);
+                    c.text_fit(76, y + 29, 13, DIM, &sub, c.w as i32 - 130 - lw);
+                    c.text_right(c.w as i32 - 34, y + 16, 15, color, &label);
                 }
             }
             y += item.height();
         }
         if top > 0 || last + 1 < items.len() {
-            let track = AREA - 6;
+            let track = area(c) - 6;
             let h = (track * (last + 1 - top) as i32 / items.len() as i32).max(20);
             let y = TOP + (track - h) * top as i32 / (items.len() - (last + 1 - top)).max(1) as i32;
-            c.rounded(W as i32 - 12, y, 4, h, 2, PICK);
+            c.rounded(c.w as i32 - 12, y, 4, h, 2, PICK);
         }
         let free = self.free.map(|f| format!("{} free", size(f))).unwrap_or_default();
         let sort = if self.newest { "R2 A-Z" } else { "R2 Newest" };
@@ -883,7 +921,7 @@ impl App {
     /// name.
     fn row(&mut self, c: &mut Canvas, y: i32, picked: bool, name: &str, thumb: &str, name_width: i32) {
         if picked {
-            c.rounded(10, y, W as i32 - 28, ROW - 4, 10, PICK);
+            c.rounded(10, y, c.w as i32 - 28, ROW - 4, 10, PICK);
         }
         let (bx, by) = (20, y + (ROW - 4 - THUMB) / 2);
         match self.pictures.get(thumb) {
@@ -908,8 +946,8 @@ impl App {
     fn page_top(&mut self, c: &mut Canvas, y: i32, cover: &str, lines: &[(u16, u32, String)]) -> i32 {
         let img = self.pictures.get(cover);
         let (x, width) = match &img {
-            Some(img) => (24 + img.w as i32 + 16, W as i32 - 48 - img.w as i32 - 16),
-            None => (24, W as i32 - 48),
+            Some(img) => (24 + img.w as i32 + 16, c.w as i32 - 48 - img.w as i32 - 16),
+            None => (24, c.w as i32 - 48),
         };
         let mut ty = y;
         for (px, color, text) in lines {
@@ -931,20 +969,20 @@ impl App {
     fn draw_details(&mut self, c: &mut Canvas, id: &str, scroll: usize) {
         let Some(port) = self.port(id).cloned() else { return };
         let state = self.state(id);
-        c.fill(0, 0, W as i32, TOP - 8, PANEL);
+        c.fill(0, 0, c.w as i32, TOP - 8, PANEL);
         let (label, color) = match &state {
             State::Installed(v) => (format!("Installed {v}"), GOOD),
             State::Update(v) => (format!("{v} installed"), WARN),
             State::ByHand => ("On the card (by hand)".into(), DIM),
             State::Absent => (String::new(), DIM),
         };
-        let lw = c.text_right(W as i32 - 20, 16, 15, color, &label);
-        c.text_fit(20, 11, 24, TEXT, &port.name, W as i32 - 60 - lw);
+        let lw = c.text_right(c.w as i32 - 20, 16, 15, color, &label);
+        c.text_fit(20, 11, 24, TEXT, &port.name, c.w as i32 - 60 - lw);
 
         // The page: its top (picture and facts), then lines of (size, colour, text);
         // scrolling past the top is the first step down.
         let mut lines: Vec<(u16, u32, String)> = Vec::new();
-        let width = W as i32 - 48;
+        let width = c.w as i32 - 48;
         let para = |c: &mut Canvas, lines: &mut Vec<(u16, u32, String)>, px: u16, color: u32, text: &str| {
             for l in c.wrap(px, text, width) {
                 lines.push((px, color, l));
@@ -981,7 +1019,9 @@ impl App {
                     Some(Have::WrongVersion(p)) => ("!", WARN, format!("{p} is another version of the game")),
                 };
                 para(c, &mut lines, 16, color, &format!("{mark} {} — {said}", need.what));
-                if !need.hint.is_empty() {
+                if let Some(Some(found)) = self.imports.get(id).and_then(|f| f.get(i)) {
+                    para(c, &mut lines, 14, ACCENT, &format!("   In {}: Start moves it to {}", found.shown, found.to));
+                } else if !need.hint.is_empty() {
                     para(c, &mut lines, 14, DIM, &format!("   {}", need.hint));
                 }
             }
@@ -1000,7 +1040,7 @@ impl App {
         let mut hidden = 0;
         for (px, color, text) in lines.iter().skip(scroll.saturating_sub(1)) {
             let h = *px as i32 + 7;
-            if y + h > FOOT - 4 {
+            if y + h > foot(c) - 4 {
                 hidden += 1;
                 continue;
             }
@@ -1008,7 +1048,7 @@ impl App {
             y += h;
         }
         if scroll > 0 || hidden > 0 {
-            c.text_right(W as i32 - 16, FOOT - 22, 13, DIM, if hidden > 0 { "▼ more" } else { "▲" });
+            c.text_right(c.w as i32 - 16, foot(c) - 22, 13, DIM, if hidden > 0 { "▼ more" } else { "▲" });
         }
         let verb = match state {
             State::Installed(_) => "A Reinstall",
@@ -1022,6 +1062,9 @@ impl App {
         if !port.needs.is_empty() {
             keys.push("Y Check again");
         }
+        if self.imports.get(id).is_some_and(|f| f.iter().any(|p| p.is_some())) {
+            keys.push("Start Place files");
+        }
 
         keys.push("B Back");
         footer(c, "", &keys.join("   "));
@@ -1029,11 +1072,11 @@ impl App {
 
     fn draw_manual(&mut self, c: &mut Canvas, at: usize, scroll: usize) {
         let Some(m) = self.index.manual.get(at).cloned() else { return };
-        c.fill(0, 0, W as i32, TOP - 8, PANEL);
-        c.text_fit(20, 11, 24, TEXT, &m.name, W as i32 - 40);
+        c.fill(0, 0, c.w as i32, TOP - 8, PANEL);
+        c.text_fit(20, 11, 24, TEXT, &m.name, c.w as i32 - 40);
         let facts = vec![(15, DIM, join(&[m.categories.join(", "), m.status.clone(), owned_word(&m.assets)]))];
         let mut lines: Vec<(u16, u32, String)> = Vec::new();
-        let width = W as i32 - 48;
+        let width = c.w as i32 - 48;
         for (px, color, text) in [
             (17, TEXT, m.notes.as_str()),
             (16, TEXT, "Port Store has no recipe for this one yet: install it by hand from its page, on a computer."),
@@ -1049,7 +1092,7 @@ impl App {
             y += self.page_top(c, TOP, &m.cover, &facts);
         }
         for (px, color, text) in lines.iter().skip(scroll.saturating_sub(1)) {
-            if y + *px as i32 + 7 > FOOT - 4 {
+            if y + *px as i32 + 7 > foot(c) - 4 {
                 break;
             }
             c.text(24, y, *px, *color, text);
@@ -1092,17 +1135,26 @@ fn step_text(step: Option<&Step>) -> (String, Option<f32>) {
     }
 }
 
+/// The footer's top, and the list's own space above it.
+fn foot(c: &Canvas) -> i32 {
+    c.h as i32 - 36
+}
+
+fn area(c: &Canvas) -> i32 {
+    foot(c) - TOP - 6
+}
+
 fn footer(c: &mut Canvas, left: &str, keys: &str) {
-    c.fill(0, FOOT, W as i32, H as i32 - FOOT, PANEL);
-    c.text(16, FOOT + 10, 14, DIM, left);
-    c.text_right(W as i32 - 16, FOOT + 10, 14, TEXT, keys);
+    c.fill(0, foot(c), c.w as i32, c.h as i32 - foot(c), PANEL);
+    c.text(16, foot(c) + 10, 14, DIM, left);
+    c.text_right(c.w as i32 - 16, foot(c) + 10, 14, TEXT, keys);
 }
 
 fn dialog(c: &mut Canvas, title: &str, text: &str, bar: Option<f32>, keys: &str) {
     let w = 520;
     let lines = c.wrap(17, text, w - 48);
     let h = 70 + lines.len() as i32 * 24 + if bar.is_some() { 30 } else { 0 } + if keys.is_empty() { 0 } else { 34 };
-    let (x, y) = ((W as i32 - w) / 2, (H as i32 - h) / 2);
+    let (x, y) = ((c.w as i32 - w) / 2, (c.h as i32 - h) / 2);
     c.rounded(x, y, w, h, 14, PANEL);
     c.text_fit(x + 24, y + 18, 21, TEXT, title, w - 48);
     let mut ty = y + 56;
@@ -1126,13 +1178,13 @@ fn dialog(c: &mut Canvas, title: &str, text: &str, bar: Option<f32>, keys: &str)
 pub fn run(store: Store) -> Result<(), String> {
     let mut fb = fb::Fb::open()?;
     let (w, h) = fb.size();
-    if (w, h) != (W, H) {
-        return Err(format!("the screen is {w}x{h}, Port Store draws 640x480"));
+    if w < W || h < H {
+        return Err(format!("the screen is {w}x{h}, Port Store needs 640x480 at least"));
     }
     let mut input = input::Input::open();
     let mut app = App::new(store);
     app.refresh_quietly();
-    let mut canvas = Canvas::new(W, H);
+    let mut canvas = Canvas::new(w, h);
     'shown: loop {
         if app.dirty {
             app.draw(&mut canvas);
@@ -1163,7 +1215,15 @@ pub fn run(store: Store) -> Result<(), String> {
 pub fn shots(store: Store, dir: &std::path::Path, ids: &[String]) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     let mut app = App::new(store);
-    let mut c = Canvas::new(W, H);
+    // PORTSTORE_SHOT_SIZE=752x560: the screens of the Mini v4 and Flip.
+    let (w, h) = std::env::var("PORTSTORE_SHOT_SIZE")
+        .ok()
+        .and_then(|v| {
+            let (w, h) = v.split_once('x')?;
+            Some((w.parse().ok()?, h.parse().ok()?))
+        })
+        .unwrap_or((W, H));
+    let mut c = Canvas::new(w, h);
     let mut save = |app: &mut App, name: &str| {
         app.draw(&mut c);
         // Pictures come in on their own thread: a little while for them.

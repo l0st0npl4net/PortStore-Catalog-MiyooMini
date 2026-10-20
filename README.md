@@ -1,6 +1,6 @@
 # Port Store for Miyoo Mini
 
-Install, update and remove ports right on a Miyoo Mini or Mini Plus running
+Install, update and remove ports right on a Miyoo Mini, Mini Plus, Mini v4 or Mini Flip running
 [OnionOS](https://github.com/OnionUI/Onion): no computer, no copying folders by hand.
 
 ![Games](docs/screenshots/games.png) ![A port's page](docs/screenshots/port.png)
@@ -14,7 +14,10 @@ Install, update and remove ports right on a Miyoo Mini or Mini Plus running
 - Games go to their own system, **Games → MiyooPorts**, next to your consoles, whatever
   way their authors packed them. Apps stay in Apps.
 - For games that need your own files (a ROM, the game's data) Port Store says what to put
-  where and checks it: N64 ROMs are recognised by checksum, in any byte order.
+  where and checks it: N64 ROMs are recognised by checksum, in any byte order. Or copy the
+  files from your computer into `App/PortStore/import` as they are, and Port Store moves them
+  where the port wants them.
+- The number of updates shows under Port Store's name in Apps.
 - Everything is downloaded from the authors' own GitHub releases and checked against the
   catalog's SHA-256. Port Store hosts no games.
 
@@ -26,8 +29,9 @@ Install, update and remove ports right on a Miyoo Mini or Mini Plus running
    with the `App` folder that is already there.
 3. On the Mini: **Apps → Port Store**.
 
-Needs Wi-Fi (Mini Plus) and the right date and time (Clock app) for secure downloads.
-Port Store draws for the 640×480 screen: the Mini v4 and Mini Flip are not supported yet.
+Needs Wi-Fi (Mini Plus, Mini Flip) and the right date and time (Clock app) for secure
+downloads. On the Mini v4 and Flip, Port Store uses the whole 752×560 screen (not yet tried on
+those devices: reports welcome).
 
 **Mini without Wi-Fi** (or Wi-Fi off): Port Store works with files brought on a computer,
 through the folder `App/PortStore/downloads` on the card. See
@@ -72,7 +76,7 @@ Files stay in `downloads` after installing: delete them to free space.
 | L1 / R1 | tabs: Games, Apps, Installed, Updates, More |
 | A | open a port; on its page: install, update or reinstall |
 | X | list: mark a port (Start installs the marked ones); page: remove |
-| Start | install the marked ports, one after another |
+| Start | list: install the marked ports, one after another; page: move your files found in `import` into place |
 | Select | Games: next genre; Updates: update all |
 | R2 | newest releases first / A to Z |
 | Y | list: download the newest catalog again; page: check your files again |
@@ -86,6 +90,18 @@ Files stay in `downloads` after installing: delete them to free space.
 
 Troubleshooting: Port Store writes `App/PortStore/cache/portstore.log`; OnionOS's import of
 ports writes `Roms/PORTS/import.log`.
+
+## Your game files
+
+Ports like Undertale, Fallout, Half-Life or OpenRCT2 need files from your own copy of the game.
+Copy them from your computer into `App/PortStore/import` on the card as they are, whole
+folders too ("Undertale (Windows)", "RollerCoaster Tycoon 2"…), and N64 ROMs for Miyoo64. On
+the port's page Port Store says what it found there and where it goes; Start moves it into
+place.
+
+## Adding a port
+
+See [CONTRIBUTING.md](CONTRIBUTING.md): a recipe in a pull request, checked automatically.
 
 ## Thanks
 

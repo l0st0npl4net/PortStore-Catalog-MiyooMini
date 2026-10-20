@@ -6,9 +6,11 @@
   "prerelease": true,
   "needs": [
     {
-      "what": "Half-Life game files (valve folder)",
-      "hint": "See the port's page for where they go.",
-      "check": []
+      "what": "Half-Life game files (the valve folder of your Steam copy)",
+      "hint": "Copy the valve folder into Roms/PORTS/Games/Half-Life.",
+      "check": [
+        "Roms/PORTS/Games/Half-Life/valve/liblist.gam"
+      ]
     }
   ]
 }

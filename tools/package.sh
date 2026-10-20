@@ -16,6 +16,9 @@ mkdir -p "$app/licenses"
 cp "$here/app/target/armv7-unknown-linux-gnueabihf/release/portstore" "$app/"
 cp "$here/app/dist/launch.sh" "$here/app/dist/config.json" "$here/assets/icon.png" "$app/"
 chmod +x "$app/launch.sh" "$app/portstore"
+# On the Mini v4 and Flip, OnionOS switches to the panel's own 752x560 for an app
+# with this file; Port Store lays itself out for the screen it is given.
+: > "$app/full_resolution"
 printf '{\n  "index": "%s"\n}\n' "$url" > "$app/settings.json"
 # Mozilla's root certificates, for checking the servers (curl --cacert).
 cp /etc/ssl/certs/ca-certificates.crt "$app/cacert.pem"
@@ -29,6 +32,12 @@ cp "$here/assets/DejaVu_License.txt" "$app/licenses/DejaVu.txt"
 cat > "$app/licenses/cacert.txt" <<'TXT'
 cacert.pem: Mozilla's CA certificate list (as Debian's ca-certificates ships it),
 under the Mozilla Public License 2.0: https://www.mozilla.org/MPL/2.0/
+TXT
+mkdir -p "$app/import"
+cat > "$app/import/README.txt" <<'TXT'
+Game files from a computer (Undertale's, Fallout's, a ROM...) can be copied here as
+they are, whole folders too. On a port's page Port Store shows what it found here for
+that port and moves it into place with Start.
 TXT
 mkdir -p "$app/downloads"
 cat > "$app/downloads/README.txt" <<'TXT'

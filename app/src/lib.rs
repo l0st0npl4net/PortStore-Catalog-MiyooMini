@@ -16,6 +16,9 @@ use std::sync::atomic::AtomicBool;
 use index::{Index, Port};
 use install::{Card, Installed, Step};
 
+/// Port Store's line in Apps (app/dist/config.json), with the updates after it.
+const DESCRIPTION: &str = "Install and update ports";
+
 /// Port Store's own entry in the catalog (recipes/portstore.json).
 pub const SELF_ID: &str = "portstore";
 
@@ -315,6 +318,28 @@ impl Store {
         unsafe { libc::sync() };
         self.mark_import();
         Ok(())
+    }
+
+    /// Say the number of updates in Port Store's description in Apps (OnionOS's
+    /// MainUI shows it under the name), so they are seen without opening it. Its
+    /// config.json is changed only when the line changes; OnionOS's own keys stay.
+    pub fn note_updates(&self, updates: usize) {
+        let path = self.card.home.join("config.json");
+        let Ok(text) = fs::read_to_string(&path) else { return };
+        let Ok(mut json) = serde_json::from_str::<serde_json::Value>(&text) else { return };
+        let line = match updates {
+            0 => DESCRIPTION.to_string(),
+            1 => format!("{DESCRIPTION} · 1 update"),
+            n => format!("{DESCRIPTION} · {n} updates"),
+        };
+        if json.get("description").and_then(|d| d.as_str()) == Some(line.as_str()) {
+            return;
+        }
+        let Some(map) = json.as_object_mut() else { return };
+        map.insert("description".into(), line.into());
+        if let Ok(out) = serde_json::to_string_pretty(&json) {
+            let _ = fs::write(&path, out + "\n");
+        }
     }
 
     /// Put right what an earlier Port Store (or catalog) left otherwise on the card.

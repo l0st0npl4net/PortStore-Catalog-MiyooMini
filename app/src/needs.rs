@@ -241,3 +241,128 @@ fn plain(text: &str) -> String {
         .map(|c| c.to_ascii_uppercase())
         .collect()
 }
+
+/// Where Port Store looks for game files brought on a computer, in any layout.
+pub const IMPORT: &str = "import";
+
+/// Files in import/ that a need can take: moved from `from` (a folder, or a ROM file)
+/// to `to` (on the card, from its root).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Placement {
+    pub from: PathBuf,
+    pub to: String,
+    /// `from` as shown: from import/.
+    pub shown: String,
+}
+
+/// Files in `home`/import/ that would meet `port`'s needs still missing, one per need
+/// (None where nothing fits). For a file check: a file of that name (any case)
+/// anywhere below import/, whose folder is the game's folder, matched by the folders
+/// the check path and the found path end in alike. For a ROM: one of the right SHA-1.
+pub fn importable(home: &Path, port: &Port, have: &[Have], roms: &mut Roms) -> Vec<Option<Placement>> {
+    let import = home.join(IMPORT);
+    let mut files = Vec::new();
+    walk(&import, 6, &mut files);
+    port.needs
+        .iter()
+        .zip(have)
+        .map(|(need, have)| {
+            if !matches!(have, Have::Missing | Have::WrongVersion(_)) {
+                return None;
+            }
+            if !need.sha1.is_empty() {
+                let rom = files.iter().find(|f| {
+                    f.extension()
+                        .and_then(|x| x.to_str())
+                        .is_some_and(|x| ROM_EXTS.contains(&x.to_ascii_lowercase().as_str()))
+                        && roms.sha1(f).is_ok_and(|(sha, _)| sha.eq_ignore_ascii_case(&need.sha1))
+                })?;
+                roms.save();
+                let dir = need.search.first().cloned().unwrap_or_else(|| "Roms/N64".into());
+                let name = rom.file_name()?.to_string_lossy().into_owned();
+                return Some(Placement {
+                    from: rom.clone(),
+                    to: format!("{dir}/{name}"),
+                    shown: shown(&import, rom),
+                });
+            }
+            need.check.iter().find_map(|check| place_for(&import, &files, check))
+        })
+        .collect()
+}
+
+fn shown(import: &Path, path: &Path) -> String {
+    let rel = path.strip_prefix(import).unwrap_or(path).to_string_lossy();
+    format!("{IMPORT}/{rel}")
+}
+
+/// What in import/ to move where for a file check `D/f`: the shallowest file named `f`
+/// (any case), found as `X/f`. The contents of `X` go into `D`; when the folders `X` and
+/// `D` end in alike (in any case), both are taken that many levels up, as long as `X`
+/// stays a folder of its own in import/: "OpenRCT2mini/rct2/Data/g1.dat" found as
+/// "RCT2 Copy/Data/G1.DAT" moves "RCT2 Copy" as rct2. A file loose in import/ moves alone.
+fn place_for(import: &Path, files: &[PathBuf], check: &str) -> Option<Placement> {
+    let want: Vec<&str> = check.split('/').collect();
+    let (file, dirs) = want.split_last()?;
+    let found = files
+        .iter()
+        .filter(|f| f.file_name().is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case(file)))
+        .min_by_key(|f| f.components().count())?;
+    let rel: Vec<String> = found
+        .strip_prefix(import)
+        .ok()?
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    let found_dirs = &rel[..rel.len() - 1];
+    if found_dirs.is_empty() {
+        return Some(Placement { from: found.clone(), to: check.to_string(), shown: shown(import, found) });
+    }
+    let shared = dirs
+        .iter()
+        .rev()
+        .zip(found_dirs.iter().rev())
+        .take_while(|(a, b)| a.eq_ignore_ascii_case(b))
+        .count();
+    let up = shared.min(found_dirs.len() - 1).min(dirs.len().saturating_sub(1));
+    let from = import.join(found_dirs[..found_dirs.len() - up].iter().collect::<PathBuf>());
+    let to = dirs[..dirs.len() - up].join("/");
+    Some(Placement { shown: shown(import, &from), from, to })
+}
+
+fn walk(dir: &Path, depth: u32, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    let mut entries: Vec<_> = entries.filter_map(|e| e.ok()).collect();
+    entries.sort_by_key(|e| e.file_name());
+    for e in entries {
+        let path = e.path();
+        match e.file_type() {
+            Ok(t) if t.is_dir() && depth > 0 => walk(&path, depth - 1, out),
+            Ok(t) if t.is_file() => out.push(path),
+            _ => {}
+        }
+    }
+}
+
+/// Move `p` into place: a folder's files merged into the target folder (the user's
+/// copy wins over files of the same name), then what is left of it removed.
+pub fn place(card: &Path, p: &Placement) -> io::Result<usize> {
+    let to = card.join(&p.to);
+    if p.from.is_file() {
+        fs::create_dir_all(to.parent().unwrap())?;
+        let _ = fs::remove_file(&to);
+        fs::rename(&p.from, &to)?;
+        return Ok(1);
+    }
+    let mut files = Vec::new();
+    walk(&p.from, 32, &mut files);
+    for f in &files {
+        let dest = to.join(f.strip_prefix(&p.from).unwrap());
+        fs::create_dir_all(dest.parent().unwrap())?;
+        let _ = fs::remove_file(&dest);
+        fs::rename(f, &dest)?;
+    }
+    let _ = fs::remove_dir_all(&p.from);
+    unsafe { libc::sync() };
+    Ok(files.len())
+}

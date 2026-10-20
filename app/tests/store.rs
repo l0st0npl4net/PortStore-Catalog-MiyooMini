@@ -847,3 +847,86 @@ fn port_store_knows_its_own_version_without_an_install_record() {
     p.version = "v0.0.1".into();
     assert_eq!(s.state(&p), State::Installed(me), "an older catalog is no update");
 }
+
+#[test]
+fn the_number_of_updates_shows_under_port_stores_name_in_apps() {
+    let card = temp("note");
+    let s = store(&card);
+    let config = card.join("App/PortStore/config.json");
+    // As OnionOS's icon packs leave it: their own keys, which stay.
+    fs::write(&config, r#"{"label": "Port Store", "icon": "/mnt/SDCARD/Icons/x.png", "launch": "launch.sh", "description": "Install and update ports"}"#).unwrap();
+    s.note_updates(3);
+    let json: serde_json::Value = serde_json::from_str(&fs::read_to_string(&config).unwrap()).unwrap();
+    assert_eq!(json["description"], "Install and update ports · 3 updates");
+    assert_eq!(json["icon"], "/mnt/SDCARD/Icons/x.png");
+    s.note_updates(1);
+    let json: serde_json::Value = serde_json::from_str(&fs::read_to_string(&config).unwrap()).unwrap();
+    assert_eq!(json["description"], "Install and update ports · 1 update");
+    s.note_updates(0);
+    let json: serde_json::Value = serde_json::from_str(&fs::read_to_string(&config).unwrap()).unwrap();
+    assert_eq!(json["description"], "Install and update ports");
+}
+
+#[test]
+fn game_files_brought_into_import_find_their_place() {
+    let card = temp("import");
+    let home = card.join("App/PortStore");
+    let s = store(&card);
+    let put = |f: &str| {
+        let p = home.join("import").join(f);
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(p, f).unwrap();
+    };
+    // An Undertale folder named as it came, RCT2 with its folders, Half-Life's valve
+    // inside its own folder, a ROM loose.
+    put("Undertale (Windows)/data.win");
+    put("Undertale (Windows)/mus_x.ogg");
+    put("RollerCoaster Tycoon 2/Data/G1.DAT");
+    put("RollerCoaster Tycoon 2/ObjData/ride.dat");
+    put("Half-Life/valve/liblist.gam");
+    let mut rom = vec![0x80, 0x37, 0x12, 0x40];
+    rom.resize(0x40, 7);
+    fs::write(home.join("import/mk64.z64"), &rom).unwrap();
+    let need = |check: &str| Need { what: "files".into(), check: vec![check.into()], ..Need::default() };
+    let p = Port {
+        needs: vec![
+            need("Roms/PORTS/Games/Undertale/data.win"),
+            need("Roms/PORTS/Games/OpenRCT2mini/rct2/Data/g1.dat"),
+            need("Roms/PORTS/Games/Half-Life/valve/liblist.gam"),
+            Need {
+                what: "ROM".into(),
+                sha1: hex(&<sha1::Sha1 as sha1::Digest>::digest(&rom)),
+                search: vec!["Roms/N64".into()],
+                ..Need::default()
+            },
+            need("Roms/PORTS/Games/Other/nothing.here"),
+        ],
+        ..Port::default()
+    };
+    let mut roms = Roms::open(&home);
+    let have = needs::check(&card, &p, &mut roms, &mut |_| {});
+    let found = needs::importable(&home, &p, &have, &mut roms);
+    let placed: Vec<Option<(String, String)>> =
+        found.iter().map(|f| f.as_ref().map(|f| (f.shown.clone(), f.to.clone()))).collect();
+    assert_eq!(
+        placed,
+        [
+            Some(("import/Undertale (Windows)".into(), "Roms/PORTS/Games/Undertale".into())),
+            Some(("import/RollerCoaster Tycoon 2".into(), "Roms/PORTS/Games/OpenRCT2mini/rct2".into())),
+            Some(("import/Half-Life".into(), "Roms/PORTS/Games/Half-Life".into())),
+            Some(("import/mk64.z64".into(), "Roms/N64/mk64.z64".into())),
+            None,
+        ]
+    );
+    for f in found.iter().flatten() {
+        needs::place(&card, f).unwrap();
+    }
+    assert!(card.join("Roms/PORTS/Games/Undertale/mus_x.ogg").exists());
+    assert!(card.join("Roms/PORTS/Games/OpenRCT2mini/rct2/ObjData/ride.dat").exists());
+    assert!(card.join("Roms/PORTS/Games/Half-Life/valve/liblist.gam").exists());
+    assert!(card.join("Roms/N64/mk64.z64").exists());
+    let have = needs::check(&card, &p, &mut roms, &mut |_| {});
+    assert!(matches!(have[..4], [Have::Found(_), Have::Found(_), Have::Found(_), Have::Found(_)]), "{have:?}");
+    assert_eq!(files_under(&home.join("import")), Vec::<String>::new(), "import/ left empty");
+    let _ = s;
+}
