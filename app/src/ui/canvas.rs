@@ -175,6 +175,26 @@ impl Canvas {
         }
     }
 
+    /// A picture with its top left at (x, y), over what is there by its alpha.
+    pub fn image(&mut self, x: i32, y: i32, image: &super::pictures::Image) {
+        for iy in 0..image.h {
+            let py = y + iy as i32;
+            if py < 0 || py >= self.h as i32 {
+                continue;
+            }
+            for ix in 0..image.w {
+                let px = x + ix as i32;
+                let p = image.px[iy * image.w + ix];
+                let a = p >> 24;
+                if a == 0 || px < 0 || px >= self.w as i32 {
+                    continue;
+                }
+                let d = &mut self.px[py as usize * self.w + px as usize];
+                *d = if a == 255 { p & 0xff_ffff } else { mix(*d, p, a) };
+            }
+        }
+    }
+
     /// The frame as a PNG (for looking at screens off the device).
     pub fn save_png(&self, path: &std::path::Path) -> std::io::Result<()> {
         let file = std::io::BufWriter::new(std::fs::File::create(path)?);

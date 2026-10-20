@@ -36,6 +36,11 @@ pub struct Port {
     pub about: String,
     #[serde(default)]
     pub url: String,
+    /// Pictures, next to the catalog: small for the list, larger for the port's page.
+    #[serde(default)]
+    pub thumb: String,
+    #[serde(default)]
+    pub cover: String,
     pub version: String,
     #[serde(default)]
     pub date: String,
@@ -115,6 +120,10 @@ pub struct Manual {
     pub notes: String,
     #[serde(default)]
     pub url: Option<String>,
+    #[serde(default)]
+    pub thumb: String,
+    #[serde(default)]
+    pub cover: String,
 }
 
 impl Index {
@@ -137,6 +146,11 @@ impl Index {
 impl Port {
     pub fn owned(&self) -> bool {
         self.assets == "owned"
+    }
+
+    /// Apps (catalog category "app"), as against games.
+    pub fn is_app(&self) -> bool {
+        self.categories.iter().any(|c| c == "app")
     }
 
     /// Whether `path` (from the card's root) is the user's.

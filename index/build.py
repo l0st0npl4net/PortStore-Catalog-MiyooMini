@@ -15,6 +15,7 @@ without it).
 import argparse
 import datetime
 import hashlib
+import io
 import json
 import os
 import posixpath
@@ -292,9 +293,66 @@ def load_json(source):
 
 
 META = ("name", "categories", "status", "assets", "porter", "notes", "image", "url")
+# Pictures as the device shows them: in the list, and on a port's page.
+SIZES = {"thumb": (48, 48), "cover": (224, 168)}
 
 
-def entry(recipe, catalog, gh, cache):
+def archive_image(path, kind, strip, files):
+    """The picture the release brings: Onion's for Games > Ports (Roms/PORTS/Imgs),
+    else an app's icon."""
+    for prefix in ("Roms/PORTS/Imgs/", "App/"):
+        found = sorted(f for f in files if f.startswith(prefix) and f.lower().endswith(".png")
+                       and (prefix != "App/" or f.lower().endswith("/icon.png")))
+        if found:
+            return read_member(path, kind, strip + found[0])
+    return None
+
+
+def fetch(url, cache):
+    path = cache / ("img-" + hashlib.sha256(url.encode()).hexdigest()[:24])
+    if not path.exists():
+        req = urllib.request.Request(url, headers={"User-Agent": "miyoo-ports-index"})
+        with urllib.request.urlopen(req, timeout=60) as r:
+            path.write_bytes(r.read(16 << 20))
+    return path.read_bytes()
+
+
+def pictures(key, data, site):
+    """The picture in the sizes the device shows, as PNG files under site/img; their
+    names (with a hash, so the device's cache is never stale) by size."""
+    from PIL import Image  # only here: the rest of the build works without Pillow
+
+    Image.MAX_IMAGE_PIXELS = 40_000_000
+    image = Image.open(io.BytesIO(data))
+    image.load()
+    image = image.convert("RGBA")
+    out = {}
+    for kind, size in SIZES.items():
+        small = image.copy()
+        small.thumbnail(size, Image.LANCZOS)
+        buf = io.BytesIO()
+        small.save(buf, "PNG", optimize=True)
+        name = f"img/{key}-{kind}-{hashlib.sha256(buf.getvalue()).hexdigest()[:8]}.png"
+        (site / name).parent.mkdir(parents=True, exist_ok=True)
+        (site / name).write_bytes(buf.getvalue())
+        out[kind] = name
+    return out
+
+
+def add_pictures(item, key, data_of, site):
+    """Put `item`'s pictures in `site` from the first source that has one; a picture
+    failing is no reason to leave the port out."""
+    for source in data_of:
+        try:
+            data = source()
+            if data:
+                item.update(pictures(key, data, site))
+                return
+        except Exception as e:  # a bad picture, a picture host down, no Pillow
+            log(f"      {key}: picture: {e}")
+
+
+def entry(recipe, catalog, gh, cache, site):
     meta = dict(catalog.get(recipe.get("catalog"), {}))
     meta["url"] = meta.pop("upstream", None) or f"https://github.com/{recipe['github']}"
     for k in META + ("group", "about"):
@@ -336,7 +394,35 @@ def entry(recipe, catalog, gh, cache):
     }
     if skipped:
         out["skipped"] = skipped
+    from_archive = lambda: None if recipe.get("into") else archive_image(path, kind, strip, files)
+    from_catalog = lambda: meta.get("image") and fetch(meta["image"], cache)
+    add_pictures(out, recipe["id"], [from_archive, from_catalog], site)
     return out
+
+
+def keep_pictures(item, previous_source, site):
+    """A port kept from the previous index keeps its pictures: copied over from it."""
+    base = previous_source.rsplit("/", 1)[0] if previous_source else ""
+    for kind in SIZES:
+        name = item.get(kind)
+        if not name or (site / name).exists():
+            continue
+        try:
+            if re.match(r"^https?://", base):
+                req = urllib.request.Request(f"{base}/{name}", headers={"User-Agent": "miyoo-ports-index"})
+                with urllib.request.urlopen(req, timeout=60) as r:
+                    data = r.read()
+            else:
+                data = (Path(base or ".") / name).read_bytes()
+            (site / name).parent.mkdir(parents=True, exist_ok=True)
+            (site / name).write_bytes(data)
+        except (OSError, urllib.error.URLError) as e:
+            log(f"      {item['id']}: picture {name}: {e}")
+            item.pop(kind)
+
+
+def slug(name):
+    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
 
 
 def main():
@@ -360,12 +446,14 @@ def main():
         log(f"previous index: {e}")
         previous = {}
     gh = Github(os.environ.get("GITHUB_TOKEN"))
+    site = Path(args.out).parent
+    site.mkdir(parents=True, exist_ok=True)
 
     ports, failed = [], []
     recipes = [r for r in load_recipes() if not args.only or r["id"] in args.only]
     for recipe in recipes:
         try:
-            p = entry(recipe, catalog, gh, cache)
+            p = entry(recipe, catalog, gh, cache, site)
             log(f"ok    {p['id']:24} {p['version']:20} {p['install']['files']:4} files"
                 + (f"  skipped {p['skipped']}" if p.get("skipped") else ""))
             ports.append(p)
@@ -373,6 +461,7 @@ def main():
             failed.append({"id": recipe["id"], "file": recipe["_file"], "error": str(e)})
             if recipe["id"] in previous:
                 ports.append(previous[recipe["id"]])
+                keep_pictures(previous[recipe["id"]], args.previous, site)
                 log(f"FAIL  {recipe['id']:24} {e} (kept {previous[recipe['id']]['version']})")
             else:
                 log(f"FAIL  {recipe['id']:24} {e}")
@@ -383,6 +472,8 @@ def main():
         | {"url": c.get("upstream")}
         for name, c in sorted(catalog.items(), key=lambda kv: kv[0].lower()) if name not in covered
     ]
+    for m in manual:
+        add_pictures(m, "m-" + slug(m["name"]), [lambda: m.get("image") and fetch(m["image"], cache)], site)
     index = {
         "format": FORMAT,
         "generated": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -394,8 +485,12 @@ def main():
     if recipes and len(failed) == len(recipes):
         log(f"every recipe failed: {out} left as it was")
         return 1
-    out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(index, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
+    # Pictures no entry names any more (from an earlier build in the same folder) go.
+    named = {item.get(k) for item in index["ports"] + manual for k in SIZES}
+    for old in (site / "img").glob("*.png"):
+        if f"img/{old.name}" not in named:
+            old.unlink()
     log(f"{len(ports)} ports, {len(manual)} manual, {len(failed)} failed -> {out}")
     return 0
 

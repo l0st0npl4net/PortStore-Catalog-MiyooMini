@@ -20,6 +20,8 @@ printf '{\n  "index": "%s"\n}\n' "$url" > "$app/settings.json"
 # Mozilla's root certificates, for checking the servers (curl --cacert).
 cp /etc/ssl/certs/ca-certificates.crt "$app/cacert.pem"
 [ -f "$here/site/index.json" ] && cp "$here/site/index.json" "$app/index.json"
+# The catalog's pictures, for a Mini without Wi-Fi (newer ones are downloaded).
+[ -d "$here/site/img" ] && cp -r "$here/site/img" "$app/img"
 cp "$here/LICENSE" "$app/licenses/PortStore.txt"
 cp "$here/assets/DejaVu_License.txt" "$app/licenses/DejaVu.txt"
 (cd "$here/app" && cargo metadata --format-version 1 --filter-platform armv7-unknown-linux-gnueabihf) |

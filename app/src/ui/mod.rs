@@ -2,6 +2,7 @@
 pub mod canvas;
 pub mod fb;
 pub mod input;
+pub mod pictures;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -15,6 +16,7 @@ use crate::needs::{self, Have, Roms};
 use crate::{size, State, Store};
 use canvas::Canvas;
 use input::Key;
+use pictures::Pictures;
 
 pub const W: usize = 640;
 pub const H: usize = 480;
@@ -31,23 +33,48 @@ const BAD: u32 = 0xef6b6b;
 
 const TOP: i32 = 56;
 const FOOT: i32 = 444;
-const ROW: i32 = 48;
-const ROWS: usize = ((FOOT - TOP - 8) / ROW) as usize;
+/// A port's row, and a group's heading above its ports.
+const ROW: i32 = 54;
+const HEADING: i32 = 30;
+/// The list's own space, and how many ports Left / Right move by.
+const AREA: i32 = FOOT - TOP - 6;
+const PAGE: usize = 6;
+const THUMB: i32 = 46;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tab {
-    All,
+    Games,
+    Apps,
     Installed,
     Updates,
     More,
 }
 
-const TABS: [(Tab, &str); 4] = [
-    (Tab::All, "All"),
+const TABS: [(Tab, &str); 5] = [
+    (Tab::Games, "Games"),
+    (Tab::Apps, "Apps"),
     (Tab::Installed, "Installed"),
     (Tab::Updates, "Updates"),
     (Tab::More, "More"),
 ];
+
+/// A row of the list: a group's heading (Miyoo64 (N64)), a port, an entry to install
+/// by hand.
+#[derive(Clone, Debug, PartialEq)]
+enum Item {
+    Heading(String),
+    Port(usize),
+    Manual(usize),
+}
+
+impl Item {
+    fn height(&self) -> i32 {
+        match self {
+            Item::Heading(_) => HEADING,
+            _ => ROW,
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 enum Action {
@@ -90,8 +117,12 @@ pub struct App {
     checking: Option<String>,
     free: Option<u64>,
     tab: Tab,
-    pick: [usize; 4],
-    top: [usize; 4],
+    /// Games of one category only (Select goes through them).
+    genre: Option<String>,
+    /// Per tab: the row picked and the first row on show, by place in `items()`.
+    pick: [usize; 5],
+    top: [usize; 5],
+    pictures: Pictures,
     view: View,
     /// Where to go back to from a message or a job.
     under: Vec<View>,
@@ -104,16 +135,19 @@ pub struct App {
 impl App {
     pub fn new(store: Store) -> App {
         let index = store.load_index();
+        let store = Arc::new(store);
         let mut app = App {
-            store: Arc::new(store),
+            pictures: Pictures::new(store.clone()),
+            store,
             index,
             states: HashMap::new(),
             needs: HashMap::new(),
             checking: None,
             free: None,
-            tab: Tab::All,
-            pick: [0; 4],
-            top: [0; 4],
+            tab: Tab::Games,
+            genre: None,
+            pick: [0; 5],
+            top: [0; 5],
             view: View::List,
             under: Vec::new(),
             jobs: channel(),
@@ -144,21 +178,72 @@ impl App {
         TABS.iter().position(|(t, _)| *t == self.tab).unwrap_or(0)
     }
 
-    /// The ports in the tab on show, by their place in the catalog.
-    fn rows(&self) -> Vec<usize> {
+    /// The rows of the tab on show. Games and apps are in alphabetical order, the
+    /// ports of a group (a collection, one porter's games) together under its heading,
+    /// in the place of the group's name.
+    fn items(&self) -> Vec<Item> {
         let ports = self.index.ports.iter().enumerate();
-        match self.tab {
-            Tab::All => ports.map(|(i, _)| i).collect(),
+        let mut shown: Vec<(usize, &Port)> = match self.tab {
+            Tab::Games => ports
+                .filter(|(_, p)| !p.is_app())
+                .filter(|(_, p)| self.genre.as_ref().is_none_or(|g| p.categories.contains(g)))
+                .collect(),
+            Tab::Apps => ports.filter(|(_, p)| p.is_app()).collect(),
             Tab::Installed => ports
                 .filter(|(_, p)| matches!(self.state(&p.id), State::Installed(_) | State::Update(_)))
-                .map(|(i, _)| i)
                 .collect(),
             Tab::Updates => ports
                 .filter(|(_, p)| matches!(self.state(&p.id), State::Update(_)))
-                .map(|(i, _)| i)
                 .collect(),
-            Tab::More => (0..self.index.manual.len()).collect(),
+            Tab::More => return (0..self.index.manual.len()).map(Item::Manual).collect(),
+        };
+        let grouped = matches!(self.tab, Tab::Games | Tab::Apps);
+        let key = |p: &Port| match grouped && !p.group.is_empty() {
+            true => (p.group.to_lowercase(), p.name.to_lowercase()),
+            false => (p.name.to_lowercase(), String::new()),
+        };
+        shown.sort_by_key(|(_, p)| key(p));
+        let mut out = Vec::new();
+        let mut group = "";
+        for (i, p) in shown {
+            if grouped && !p.group.is_empty() && p.group != group {
+                out.push(Item::Heading(p.group.clone()));
+            }
+            group = if grouped { p.group.as_str() } else { "" };
+            out.push(Item::Port(i));
         }
+        out
+    }
+
+    /// The categories of games, for Select to go through.
+    fn genres(&self) -> Vec<String> {
+        let mut all: Vec<String> = self
+            .index
+            .ports
+            .iter()
+            .filter(|p| !p.is_app())
+            .flat_map(|p| p.categories.iter().cloned())
+            .collect();
+        all.sort();
+        all.dedup();
+        all
+    }
+
+    /// The pick on a port (not a heading), from `at` on in the direction `step`.
+    fn pickable(items: &[Item], at: usize, step: i64) -> usize {
+        let n = items.len() as i64;
+        if n == 0 {
+            return 0;
+        }
+        let mut i = at as i64;
+        for _ in 0..n {
+            let wrapped = i.rem_euclid(n) as usize;
+            if !matches!(items[wrapped], Item::Heading(_)) {
+                return wrapped;
+            }
+            i += step;
+        }
+        0
     }
 
     fn port(&self, id: &str) -> Option<&Port> {
@@ -204,25 +289,50 @@ impl App {
 
     fn list_key(&mut self, key: Key) -> Flow {
         let t = self.tab_at();
-        let n = self.rows().len();
-        let move_by = |pick: usize, by: i64| (pick as i64 + by).clamp(0, n.max(1) as i64 - 1) as usize;
-        match key {
-            Key::Up => self.pick[t] = if self.pick[t] == 0 { n.saturating_sub(1) } else { self.pick[t] - 1 },
-            Key::Down => self.pick[t] = if self.pick[t] + 1 >= n { 0 } else { self.pick[t] + 1 },
-            Key::Left => self.pick[t] = move_by(self.pick[t], -(ROWS as i64)),
-            Key::Right => self.pick[t] = move_by(self.pick[t], ROWS as i64),
-            Key::L1 => self.tab = TABS[(t + TABS.len() - 1) % TABS.len()].0,
-            Key::R1 => self.tab = TABS[(t + 1) % TABS.len()].0,
-            Key::Y => self.start(Action::Refresh),
-            Key::A if n > 0 => {
-                let row = self.rows()[self.pick[t].min(n - 1)];
-                if self.tab == Tab::More {
-                    self.view = View::Manual { at: row, scroll: 0 };
-                } else {
-                    let id = self.index.ports[row].id.clone();
-                    self.open(id);
+        let items = self.items();
+        let n = items.len();
+        let pick = self.pick[t].min(n.saturating_sub(1));
+        // Pages: so many ports on, not wrapping round.
+        let page = |by: i64| {
+            let mut at = pick;
+            for _ in 0..PAGE {
+                let next = at as i64 + by.signum();
+                if next < 0 || next >= n as i64 {
+                    break;
+                }
+                at = next as usize;
+                while matches!(items[at], Item::Heading(_)) && at > 0 && at + 1 < n {
+                    at = (at as i64 + by.signum()) as usize;
                 }
             }
+            App::pickable(&items, at, -by.signum())
+        };
+        match key {
+            Key::Up if n > 0 => self.pick[t] = App::pickable(&items, (pick + n - 1) % n, -1),
+            Key::Down if n > 0 => self.pick[t] = App::pickable(&items, (pick + 1) % n, 1),
+            Key::Left if n > 0 => self.pick[t] = page(-1),
+            Key::Right if n > 0 => self.pick[t] = page(1),
+            Key::L1 => self.tab = TABS[(t + TABS.len() - 1) % TABS.len()].0,
+            Key::R1 => self.tab = TABS[(t + 1) % TABS.len()].0,
+            Key::Select if self.tab == Tab::Games => {
+                let genres = self.genres();
+                let at = self.genre.as_ref().and_then(|g| genres.iter().position(|x| x == g));
+                self.genre = match at {
+                    None => genres.first().cloned(),
+                    Some(i) => genres.get(i + 1).cloned(),
+                };
+                self.pick[t] = 0;
+                self.top[t] = 0;
+            }
+            Key::Y => self.start(Action::Refresh),
+            Key::A if n > 0 => match items[pick].clone() {
+                Item::Manual(at) => self.view = View::Manual { at, scroll: 0 },
+                Item::Port(at) => {
+                    let id = self.index.ports[at].id.clone();
+                    self.open(id);
+                }
+                Item::Heading(_) => {}
+            },
             Key::B | Key::Start => return Flow::Exit,
             _ => {}
         }
@@ -246,7 +356,7 @@ impl App {
         match key {
             Key::B => self.view = View::List,
             Key::Up => self.view = View::Details { id, scroll: scroll.saturating_sub(1) },
-            Key::Down => self.view = View::Details { id, scroll: scroll + 1 },
+            Key::Down => self.view = View::Details { id, scroll: (scroll + 1).min(60) },
             Key::A => {
                 let verb = match state {
                     State::Installed(_) => "Reinstall",
@@ -341,8 +451,11 @@ impl App {
         });
     }
 
-    /// Take in what the jobs have sent.
+    /// Take in what the jobs have sent, and pictures downloaded.
     pub fn pump(&mut self) {
+        if self.pictures.pump() {
+            self.dirty = true;
+        }
         while let Ok(msg) = self.jobs.1.try_recv() {
             self.dirty = true;
             match msg {
@@ -461,86 +574,156 @@ impl App {
     fn draw_list(&mut self, c: &mut Canvas) {
         c.fill(0, 0, W as i32, TOP - 8, PANEL);
         c.text(20, 12, 24, TEXT, "Port Store");
-        let mut x = W as i32 - 16;
+        let mut x = W as i32 - 12;
         for (tab, name) in TABS.iter().rev() {
             let label = match tab {
                 Tab::Updates => {
                     let n = self.states.values().filter(|s| matches!(s, State::Update(_))).count();
                     if n > 0 { format!("{name} {n}") } else { name.to_string() }
                 }
+                Tab::Games => match &self.genre {
+                    Some(g) => format!("{name}: {g}"),
+                    None => name.to_string(),
+                },
                 _ => name.to_string(),
             };
-            let w = c.width(16, &label) + 20;
+            let w = c.width(15, &label) + 16;
             x -= w;
             if *tab == self.tab {
-                c.rounded(x, 11, w, 26, 13, ACCENT);
+                c.rounded(x, 12, w, 25, 12, ACCENT);
             }
-            c.text(x + 10, 15, 16, if *tab == self.tab { 0x0d1117 } else { DIM }, &label);
-            x -= 4;
+            c.text(x + 8, 16, 15, if *tab == self.tab { 0x0d1117 } else { DIM }, &label);
+            x -= 2;
         }
 
-        let rows = self.rows();
+        let items = self.items();
         let t = self.tab_at();
-        let pick = self.pick[t].min(rows.len().saturating_sub(1));
+        let pick = App::pickable(&items, self.pick[t].min(items.len().saturating_sub(1)), 1);
         self.pick[t] = pick;
-        if pick < self.top[t] {
-            self.top[t] = pick;
-        } else if pick >= self.top[t] + ROWS {
-            self.top[t] = pick + 1 - ROWS;
+        // Scroll so the pick is in full view, its group's heading with it when it can.
+        let mut top = self.top[t].min(pick);
+        if pick == top && top > 0 && matches!(items[top - 1], Item::Heading(_)) {
+            top -= 1;
         }
-        let top = self.top[t];
-        if rows.is_empty() {
+        while top < pick && items[top..=pick].iter().map(Item::height).sum::<i32>() > AREA {
+            top += 1;
+        }
+        self.top[t] = top;
+        if items.is_empty() {
             let text = match self.tab {
                 Tab::Installed => "Nothing installed with Port Store yet.",
                 Tab::Updates => "Everything installed is up to date.",
                 Tab::More => "Nothing more in the catalog.",
-                Tab::All => "The catalog is empty: press Y to download it.",
+                Tab::Apps => "No apps in the catalog.",
+                Tab::Games => "The catalog is empty: press Y to download it.",
             };
             let w = c.width(18, text);
             c.text((W as i32 - w) / 2, 220, 18, DIM, text);
         }
-        for (slot, &row) in rows.iter().enumerate().skip(top).take(ROWS) {
-            let y = TOP + (slot - top) as i32 * ROW;
-            if slot == pick {
-                c.rounded(10, y, W as i32 - 28, ROW - 4, 10, PICK);
+        let mut y = TOP;
+        let mut last = top;
+        for (at, item) in items.iter().enumerate().skip(top) {
+            if y + item.height() > TOP + AREA {
+                break;
             }
-            if self.tab == Tab::More {
-                let m = self.index.manual[row].clone();
-                c.text_fit(24, y + 4, 19, TEXT, &m.name, 420);
-                let sub = join(&[m.categories.join(", "), m.status.clone(), owned_word(&m.assets)]);
-                c.text_fit(24, y + 26, 13, DIM, &sub, 440);
-                c.text_right(W as i32 - 34, y + 13, 14, DIM, "by hand");
-                continue;
+            last = at;
+            match item {
+                Item::Heading(name) => {
+                    c.text(20, y + 8, 15, ACCENT, name);
+                    let w = c.width(15, name);
+                    c.fill(30 + w, y + 17, W as i32 - 58 - w, 1, PICK);
+                }
+                Item::Manual(m) => {
+                    let m = self.index.manual[*m].clone();
+                    self.row(c, y, at == pick, &m.name, &m.thumb, 420);
+                    let sub = join(&[m.categories.join(", "), m.status.clone(), owned_word(&m.assets)]);
+                    c.text_fit(76, y + 29, 13, DIM, &sub, 440);
+                    c.text_right(W as i32 - 34, y + 16, 14, DIM, "by hand");
+                }
+                Item::Port(p) => {
+                    let port = self.index.ports[*p].clone();
+                    let (label, color) = match self.state(&port.id) {
+                        State::Installed(_) => ("Installed".to_string(), GOOD),
+                        State::Update(_) => ("Update".to_string(), WARN),
+                        State::ByHand => ("On card".to_string(), DIM),
+                        State::Absent => (size(port.file.size), DIM),
+                    };
+                    let lw = c.width(15, &label);
+                    self.row(c, y, at == pick, &port.name, &port.thumb, W as i32 - 130 - lw);
+                    // Under a heading the group goes without saying.
+                    let grouped = matches!(self.tab, Tab::Games | Tab::Apps) && !port.group.is_empty();
+                    let sub = join(&[
+                        if port.group.is_empty() || grouped { port.categories.join(", ") } else { port.group.clone() },
+                        port.status.clone(),
+                        owned_word(&port.assets),
+                    ]);
+                    c.text_fit(76, y + 29, 13, DIM, &sub, W as i32 - 130 - lw);
+                    c.text_right(W as i32 - 34, y + 16, 15, color, &label);
+                }
             }
-            let port = self.index.ports[row].clone();
-            let (label, color) = match self.state(&port.id) {
-                State::Installed(_) => ("Installed".to_string(), GOOD),
-                State::Update(_) => ("Update".to_string(), WARN),
-                State::ByHand => ("On card".to_string(), DIM),
-                State::Absent => (size(port.file.size), DIM),
-            };
-            let lw = c.width(15, &label);
-            c.text_fit(24, y + 4, 19, TEXT, &port.name, W as i32 - 80 - lw);
-            let sub = join(&[
-                if port.group.is_empty() { port.categories.join(", ") } else { port.group.clone() },
-                port.status.clone(),
-                owned_word(&port.assets),
-            ]);
-            c.text_fit(24, y + 26, 13, DIM, &sub, W as i32 - 80 - lw);
-            c.text_right(W as i32 - 34, y + 13, 15, color, &label);
+            y += item.height();
         }
-        if rows.len() > ROWS {
-            let track = FOOT - TOP - 12;
-            let h = (track * ROWS as i32 / rows.len() as i32).max(20);
-            let y = TOP + (track - h) * top as i32 / (rows.len() - ROWS) as i32;
+        if top > 0 || last + 1 < items.len() {
+            let track = AREA - 6;
+            let h = (track * (last + 1 - top) as i32 / items.len() as i32).max(20);
+            let y = TOP + (track - h) * top as i32 / (items.len() - (last + 1 - top)).max(1) as i32;
             c.rounded(W as i32 - 12, y, 4, h, 2, PICK);
         }
         let free = self.free.map(|f| format!("{} free", size(f))).unwrap_or_default();
-        footer(
-            c,
-            &join(&[format!("Catalog {}", self.index_date()), free]),
-            "A Open   Y Refresh   L1/R1 Tabs   B Exit",
-        );
+        let keys = match self.tab {
+            Tab::Games => "A Open  Select Genre  Y Refresh  L1/R1 Tabs  B Exit",
+            _ => "A Open   Y Refresh   L1/R1 Tabs   B Exit",
+        };
+        footer(c, &join(&[self.index_date(), free]), keys);
+    }
+
+    /// A row's background, picture (the first letter of the name without one) and
+    /// name.
+    fn row(&mut self, c: &mut Canvas, y: i32, picked: bool, name: &str, thumb: &str, name_width: i32) {
+        if picked {
+            c.rounded(10, y, W as i32 - 28, ROW - 4, 10, PICK);
+        }
+        let (bx, by) = (20, y + (ROW - 4 - THUMB) / 2);
+        match self.pictures.get(thumb) {
+            Some(img) => {
+                let (ix, iy) = (bx + (THUMB - img.w as i32) / 2, by + (THUMB - img.h as i32) / 2);
+                c.image(ix, iy, &img);
+            }
+            None => {
+                c.rounded(bx, by, THUMB, THUMB, 8, if picked { BG } else { PANEL });
+                let letter: String = name.chars().take(1).collect();
+                if !letter.is_empty() {
+                    let w = c.width(20, &letter);
+                    c.text(bx + (THUMB - w) / 2, by + 11, 20, DIM, &letter);
+                }
+            }
+        }
+        c.text_fit(76, y + 6, 19, TEXT, name, name_width);
+    }
+
+    /// The top of a port's page: its picture, and beside it what is said of it in
+    /// short. Its height.
+    fn page_top(&mut self, c: &mut Canvas, y: i32, cover: &str, lines: &[(u16, u32, String)]) -> i32 {
+        let img = self.pictures.get(cover);
+        let (x, width) = match &img {
+            Some(img) => (24 + img.w as i32 + 16, W as i32 - 48 - img.w as i32 - 16),
+            None => (24, W as i32 - 48),
+        };
+        let mut ty = y;
+        for (px, color, text) in lines {
+            for l in c.wrap(*px, text, width) {
+                c.text(x, ty, *px, *color, &l);
+                ty += *px as i32 + 7;
+            }
+            ty += 4;
+        }
+        match img {
+            Some(img) => {
+                c.image(24, y, &img);
+                (ty - y).max(img.h as i32) + 12
+            }
+            None => ty - y + 8,
+        }
     }
 
     fn draw_details(&mut self, c: &mut Canvas, id: &str, scroll: usize) {
@@ -556,7 +739,8 @@ impl App {
         let lw = c.text_right(W as i32 - 20, 16, 15, color, &label);
         c.text_fit(20, 11, 24, TEXT, &port.name, W as i32 - 60 - lw);
 
-        // The page as lines of (size, colour, text), scrolled as a whole.
+        // The page: its top (picture and facts), then lines of (size, colour, text);
+        // scrolling past the top is the first step down.
         let mut lines: Vec<(u16, u32, String)> = Vec::new();
         let width = W as i32 - 48;
         let para = |c: &mut Canvas, lines: &mut Vec<(u16, u32, String)>, px: u16, color: u32, text: &str| {
@@ -565,17 +749,17 @@ impl App {
             }
         };
         let by = if port.porter.is_empty() { String::new() } else { format!("by {}", port.porter.join(", ")) };
-        let meta = join(&[port.group.clone(), port.categories.join(", "), port.status.clone(), by]);
-        para(c, &mut lines, 15, DIM, &meta);
-        let ver = format!(
-            "Version {}{} · {} download · {} on the card",
-            port.version,
-            if port.date.is_empty() { String::new() } else { format!(" ({})", port.date) },
-            size(port.file.size),
-            size(port.install.bytes)
-        );
-        para(c, &mut lines, 15, DIM, &ver);
-        lines.push((8, DIM, String::new()));
+        let facts = vec![
+            (15, DIM, join(&[port.group.clone(), port.categories.join(", "), port.status.clone()])),
+            (15, DIM, by),
+            (15, DIM, format!(
+                "Version {}{}",
+                port.version,
+                if port.date.is_empty() { String::new() } else { format!(" ({})", port.date) }
+            )),
+            (15, DIM, format!("{} download · {} on the card", size(port.file.size), size(port.install.bytes))),
+        ];
+        let facts: Vec<_> = facts.into_iter().filter(|(_, _, t)| !t.is_empty()).collect();
         if !port.text().is_empty() {
             para(c, &mut lines, 17, TEXT, port.text());
             lines.push((8, DIM, String::new()));
@@ -611,8 +795,11 @@ impl App {
         para(c, &mut lines, 13, DIM, &format!("File: {} (without Wi-Fi: put it in App/PortStore/downloads)", port.file.name));
 
         let mut y = TOP;
+        if scroll == 0 {
+            y += self.page_top(c, TOP, &port.cover, &facts);
+        }
         let mut hidden = 0;
-        for (px, color, text) in lines.iter().skip(scroll) {
+        for (px, color, text) in lines.iter().skip(scroll.saturating_sub(1)) {
             let h = *px as i32 + 7;
             if y + h > FOOT - 4 {
                 hidden += 1;
@@ -644,11 +831,10 @@ impl App {
         let Some(m) = self.index.manual.get(at).cloned() else { return };
         c.fill(0, 0, W as i32, TOP - 8, PANEL);
         c.text_fit(20, 11, 24, TEXT, &m.name, W as i32 - 40);
+        let facts = vec![(15, DIM, join(&[m.categories.join(", "), m.status.clone(), owned_word(&m.assets)]))];
         let mut lines: Vec<(u16, u32, String)> = Vec::new();
         let width = W as i32 - 48;
-        let meta = join(&[m.categories.join(", "), m.status.clone(), owned_word(&m.assets)]);
         for (px, color, text) in [
-            (15, DIM, meta.as_str()),
             (17, TEXT, m.notes.as_str()),
             (16, TEXT, "Port Store has no recipe for this one yet: install it by hand from its page, on a computer."),
             (14, ACCENT, m.url.as_deref().unwrap_or("").trim_start_matches("https://")),
@@ -659,7 +845,10 @@ impl App {
             lines.push((8, DIM, String::new()));
         }
         let mut y = TOP;
-        for (px, color, text) in lines.iter().skip(scroll) {
+        if scroll == 0 {
+            y += self.page_top(c, TOP, &m.cover, &facts);
+        }
+        for (px, color, text) in lines.iter().skip(scroll.saturating_sub(1)) {
             if y + *px as i32 + 7 > FOOT - 4 {
                 break;
             }
@@ -765,13 +954,29 @@ pub fn shots(store: Store, dir: &std::path::Path, ids: &[String]) -> Result<(), 
     let mut c = Canvas::new(W, H);
     let mut save = |app: &mut App, name: &str| {
         app.draw(&mut c);
+        // Pictures come in on their own thread: a little while for them.
+        for _ in 0..30 {
+            std::thread::sleep(Duration::from_millis(50));
+            if app.pictures.pump() {
+                app.draw(&mut c);
+            }
+        }
         c.save_png(&dir.join(format!("{name}.png"))).map_err(|e| e.to_string())
     };
     for (tab, name) in TABS {
         app.tab = tab;
         save(&mut app, &format!("list-{}", name.to_lowercase()))?;
     }
-    app.tab = Tab::All;
+    app.tab = Tab::Games;
+    let items = app.items();
+    if let Some(at) = items.iter().position(|i| matches!(i, Item::Heading(_))) {
+        app.pick[0] = at + 1;
+        save(&mut app, "list-games-group")?;
+    }
+    app.pick[0] = 0;
+    app.genre = Some("racing".into());
+    save(&mut app, "list-games-racing")?;
+    app.genre = None;
     let ids: Vec<String> = match ids.is_empty() {
         true => app.index.ports.first().map(|p| p.id.clone()).into_iter().collect(),
         false => ids.to_vec(),
@@ -798,4 +1003,76 @@ pub fn shots(store: Store, dir: &std::path::Path, ids: &[String]) -> Result<(), 
     };
     save(&mut app, "busy")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::index::Port;
+
+    fn app(ports: &[(&str, &str, &[&str])]) -> App {
+        let dir = std::env::temp_dir().join(format!("portstore-ui-{}", std::process::id()));
+        let mut app = App::new(Store::open(dir.clone(), dir.join("home")));
+        app.index.ports = ports
+            .iter()
+            .map(|(name, group, cats)| Port {
+                id: name.to_lowercase(),
+                name: name.to_string(),
+                group: group.to_string(),
+                categories: cats.iter().map(|c| c.to_string()).collect(),
+                ..Port::default()
+            })
+            .collect();
+        app
+    }
+
+    fn names(app: &App) -> Vec<String> {
+        app.items()
+            .iter()
+            .map(|i| match i {
+                Item::Heading(h) => format!("# {h}"),
+                Item::Port(p) => app.index.ports[*p].name.clone(),
+                Item::Manual(m) => app.index.manual[*m].name.clone(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn groups_sit_under_their_heading_in_the_place_of_their_name() {
+        let mut app = app(&[
+            ("Zork", "", &["rpg"]),
+            ("Super Mario 64", "Miyoo64 (N64)", &["platform"]),
+            ("Blips", "", &["puzzle"]),
+            ("Mario Kart 64", "Miyoo64 (N64)", &["racing"]),
+            ("Rewind", "", &["app"]),
+        ]);
+        assert_eq!(names(&app), ["Blips", "# Miyoo64 (N64)", "Mario Kart 64", "Super Mario 64", "Zork"]);
+        app.genre = Some("racing".into());
+        assert_eq!(names(&app), ["# Miyoo64 (N64)", "Mario Kart 64"]);
+        app.tab = Tab::Apps;
+        assert_eq!(names(&app), ["Rewind"]);
+    }
+
+    #[test]
+    fn headings_are_never_picked() {
+        let mut app = app(&[("P", "G", &["x"]), ("Q", "G", &["x"]), ("Z", "", &["x"])]);
+        // # G, P, Q, Z
+        assert_eq!(App::pickable(&app.items(), 0, 1), 1);
+        app.pick[0] = 1;
+        app.key(Key::Up);
+        assert_eq!(app.pick[0], 3, "up from the first port wraps to the last");
+        app.key(Key::Down);
+        assert_eq!(app.pick[0], 1, "and down past the heading to the first");
+    }
+
+    #[test]
+    fn select_goes_through_the_genres_of_games() {
+        let mut app = app(&[("A", "", &["racing"]), ("B", "", &["arcade"]), ("C", "", &["app"])]);
+        let mut seen = Vec::new();
+        for _ in 0..3 {
+            app.key(Key::Select);
+            seen.push(app.genre.clone());
+        }
+        assert_eq!(seen, [Some("arcade".into()), Some("racing".into()), None]);
+    }
 }

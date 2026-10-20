@@ -12,7 +12,11 @@ the device, from the ports' own GitHub releases.
 - `app/` — Port Store itself (Rust; draws to the framebuffer, no SDL).
 
 Nothing is re-hosted: the device downloads each file from its author's release and checks
-it against the SHA-256 in the index.
+it against the SHA-256 in the index. Only the ports' pictures are published with the index
+(`img/`, made small by the build: 48×48 for the list, up to 224×168 for a port's page),
+taken from the release (Onion's `Roms/PORTS/Imgs`, or an app's `icon.png`) or else from
+the catalog's `image`. The build needs Pillow for them (`pip install pillow`); without it
+the index is built without pictures.
 
 ## Recipes
 
@@ -32,8 +36,9 @@ it against the SHA-256 in the index.
 |---|---|
 | `id` | unique, also the name of the install record on the card |
 | `catalog` | the entry's `name` in MiyooMini-Ports `ports.json`: its metadata is used |
-| `name`, `group`, `categories`, `status`, `assets`, `porter`, `about`, `url` | override or replace catalog metadata |
+| `name`, `group`, `categories`, `status`, `assets`, `porter`, `about`, `url`, `image` | override or replace catalog metadata. Category `app` puts a port under Apps, the rest under Games; ports of a `group` are listed together under its heading |
 | `github`, `asset`, `tag`, `prerelease` | release search: repository, file name regex, tag regex, allow pre-releases |
+| `into` | a folder the whole archive goes into (an app zipped without its `App/<Name>/`) |
 | `strip` | prefix taken off every member (default: a single wrapper folder that is not a card folder) |
 | `take` | path prefixes (from the card's root) that are installed; default `App/`, `Roms/PORTS/` |
 | `keep` | files of the release the user changes (settings): installed once, then never overwritten or removed (prefix if it ends in `/`). Files the release does not have (saves, game data) are never touched anyway |
