@@ -29,7 +29,8 @@ from pathlib import Path, PurePosixPath
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
-CATALOG_URL = "https://raw.githubusercontent.com/Producdevity/MiyooMini-Ports/main/ports.json"
+# HEAD: the repository's default branch, whatever it is called (master there).
+CATALOG_URL = "https://raw.githubusercontent.com/Producdevity/MiyooMini-Ports/HEAD/ports.json"
 # Top folders of an Onion SD card; anything else at the top of an archive is a wrapper
 # folder (stripped when it is the only one) or files for other systems.
 CARD_ROOTS = {"App", "Roms", "Emu", "RApp", "BIOS", "Saves", "Themes", "Icons", "Media"}
@@ -349,7 +350,10 @@ def main():
 
     cache = Path(args.cache)
     cache.mkdir(parents=True, exist_ok=True)
-    catalog = {p["name"]: p for p in (load_json(args.catalog) or {}).get("ports", [])}
+    try:
+        catalog = {p["name"]: p for p in (load_json(args.catalog) or {}).get("ports", [])}
+    except (OSError, ValueError, urllib.error.URLError) as e:
+        raise SystemExit(f"catalog {args.catalog}: {e}")
     try:
         previous = {p["id"]: p for p in (load_json(args.previous) or {}).get("ports", [])}
     except (OSError, ValueError, urllib.error.URLError) as e:
