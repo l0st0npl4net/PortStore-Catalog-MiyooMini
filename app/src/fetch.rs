@@ -1,4 +1,4 @@
-//! Downloads, with Onion's curl (OpenSSL, checked against Port Store's own cacert.pem).
+//! Downloads, with OnionOS's curl (OpenSSL, checked against Port Store's own cacert.pem).
 //! file:// addresses are copied directly (tests, a catalog on the card).
 use std::fs;
 use std::io::{self, Read, Write};

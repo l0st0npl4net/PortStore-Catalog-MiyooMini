@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Draw Port Store's icon (74x74 RGBA, as Onion's app icons): a box with an arrow
+"""Draw Port Store's icon (74x74 RGBA, as OnionOS's app icons): a box with an arrow
 going into it. Standard library only.  python3 tools/icon.py assets/icon.png"""
 import math
 import struct

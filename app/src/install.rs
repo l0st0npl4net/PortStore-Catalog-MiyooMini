@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::archive;
 use crate::index::Port;
+use crate::miyooports::{self, AppLaunch};
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct Installed {
@@ -20,9 +21,13 @@ pub struct Installed {
     pub date: String,
     /// Files put on the card, from its root.
     pub files: Vec<String>,
-    /// Shortcuts for Onion's Ports Collection: ~Import ports has to look at them.
+    /// Launchers in MiyooPorts (and, before 0.4, shortcuts in Ports).
     #[serde(default)]
     pub shortcuts: bool,
+    /// How the game starts when it is in an app's folder (whose config.json, its
+    /// entry in Apps, is not installed).
+    #[serde(default)]
+    pub apps: Vec<AppLaunch>,
 }
 
 /// Progress of a job, to the screen.
@@ -34,8 +39,7 @@ pub enum Step {
     Finish,
 }
 
-const SHORTCUTS: &str = "Roms/PORTS/Shortcuts/";
-/// Onion's ~Import ports looks for a port's files from here, also for those outside
+/// OnionOS's ~Import ports looks for a port's files from here, also for those outside
 /// it ("../../../App/MarioKart64"): without the folder that path leads nowhere and
 /// the port is hidden as "not found". Ports Collection does not make it.
 const GAMES: &str = "Roms/PORTS/Games";
@@ -54,46 +58,7 @@ pub fn target(port: &Port, name: &str) -> Option<String> {
     } else {
         return None;
     };
-    (!port.skip.iter().any(|s| to.starts_with(s.as_str()))).then_some(to)
-}
-
-/// The Ports shortcut (and its picture) Port Store makes for `port`: (path, bytes).
-pub fn made_shortcut(root: &Path, port: &Port) -> Vec<(String, Vec<u8>)> {
-    let Some(sc) = &port.shortcut else {
-        return Vec::new();
-    };
-    let Some((dir, launch)) = sc.launch.rsplit_once('/') else {
-        return Vec::new();
-    };
-    // A file name Onion lists the game by: no folder separators or quotes.
-    let name: String = port
-        .name
-        .chars()
-        .map(|c| if matches!(c, '/' | '\\' | '"' | ':' | '*' | '?' | '<' | '>' | '|') { ' ' } else { c })
-        .collect();
-    let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
-    let check_dir = if sc.dir.is_empty() { dir } else { sc.dir.as_str() };
-    let check_file = if sc.data.is_empty() { launch } else { sc.data.as_str() };
-    let text = format!(
-        "#!/bin/sh\n\
-         # {name}: made by Port Store for Onion's Ports; the game is in {dir}.\n\
-         GameName=\"{name}\"\n\
-         GameDir=\"../../../{check_dir}\"\n\
-         GameDataFile=\"{check_file}\"\n\
-         cd \"/mnt/SDCARD/{dir}\" || exit 1\n\
-         # Sound through Onion's audioserver, as Apps have it.\n\
-         if pgrep audioserver > /dev/null 2>&1 && [ -f /mnt/SDCARD/miyoo/lib/libpadsp.so ]; then\n\
-         \x20   export LD_PRELOAD=/mnt/SDCARD/miyoo/lib/libpadsp.so\n\
-         fi\n\
-         exec sh \"./{launch}\"\n"
-    );
-    let mut out = vec![(format!("{SHORTCUTS}{name}.port"), text.into_bytes())];
-    if !sc.image.is_empty() {
-        if let Ok(png) = fs::read(root.join(&sc.image)) {
-            out.push((format!("Roms/PORTS/Imgs/{name}.png"), png));
-        }
-    }
-    out
+    (!port.skip.iter().any(|s| to.starts_with(s.as_str()))).then(|| miyooports::relocate(to))
 }
 
 /// `.port` and `.notfound` are the same shortcut: ~Import ports renames one to the other.
@@ -149,43 +114,110 @@ impl Card {
     pub fn repair_ports(&self) -> bool {
         let games = self.root.join(GAMES);
         let wanted = !games.exists() && self.all_installed().iter().any(|r| r.shortcuts);
-        wanted && fs::create_dir_all(games).is_ok()
+        let made = wanted && fs::create_dir_all(games).is_ok();
+        // MiyooPorts' own folder and icon, should they have gone.
+        if self.all_installed().iter().any(|r| r.files.iter().any(|f| f.starts_with(miyooports::DIR))) {
+            let _ = miyooports::ensure_system(&self.root);
+        }
+        made
     }
 
-    /// Bring an installed port in line with how the catalog installs it now, without
-    /// installing it again: files it no longer installs (`skip`) go, a shortcut it now
-    /// makes is made. Whether anything changed.
+    /// Bring an installed port in line with how Port Store installs it now, without
+    /// installing it again: shortcuts of Ports moved into MiyooPorts' hidden folder
+    /// (Port Store before 0.4 had them in Ports), a game's entry in Apps taken away,
+    /// files the catalog no longer installs (`skip`) removed, the MiyooPorts
+    /// launchers made. Whether anything changed.
     pub fn conform(&self, port: &Port) -> io::Result<bool> {
         let Some(mut rec) = self.installed(&port.id) else {
             return Ok(false);
         };
-        let skipped: Vec<String> = rec
-            .files
+        let mut changed = false;
+        let mut gone = Vec::new();
+        let mut files = Vec::new();
+        for f in std::mem::take(&mut rec.files) {
+            if port.skip.iter().any(|s| f.starts_with(s.as_str())) {
+                gone.push(f);
+            } else if miyooports::app_entry(port, &f) {
+                let dir = f.trim_end_matches("/config.json").to_string();
+                rec.apps.push(miyooports::app_launch(&self.root.join(&f), &dir));
+                gone.push(f);
+            } else if f.starts_with("Roms/PORTS/Shortcuts/") || f.starts_with("Roms/PORTS/Imgs/") || f.starts_with("Roms/PORTS/Manuals/") {
+                let to = miyooports::relocate(f.clone());
+                // ~Import ports may have renamed the shortcut: whichever name is there.
+                let from = [Some(f.clone()), twin(&f)]
+                    .into_iter()
+                    .flatten()
+                    .find(|p| self.root.join(p).exists());
+                // Shortcuts Port Store made itself are not wanted: the launcher starts it.
+                let made = miyooports::file_name(&port.name);
+                let made_by_us = port.shortcut.is_some()
+                    && (f == format!("Roms/PORTS/Shortcuts/{made}.port") || f == format!("Roms/PORTS/Imgs/{made}.png"));
+                if !made_by_us {
+                    if let Some(from) = from {
+                        let dest = self.root.join(&to);
+                        fs::create_dir_all(dest.parent().unwrap())?;
+                        move_file(&self.root.join(&from), &dest)?;
+                    }
+                    files.push(to);
+                } else {
+                    gone.push(f);
+                }
+                changed = true;
+            } else {
+                files.push(f);
+            }
+        }
+        changed |= !gone.is_empty();
+        self.remove_files(&port.id, &gone);
+        rec.files = files;
+        changed |= self.put_launchers(port, &mut rec.files, &rec.apps)?;
+        rec.shortcuts = rec.files.iter().any(|f| f.starts_with(miyooports::DIR));
+        if changed {
+            self.write_record(&rec)?;
+            miyooports::reset_list(&self.root, "Roms/PORTS/Shortcuts");
+        }
+        Ok(changed)
+    }
+
+    /// Write `port`'s MiyooPorts launchers (only those that differ), add them to
+    /// `files`, take away launchers of it no longer made. Whether any changed.
+    fn put_launchers(&self, port: &Port, files: &mut Vec<String>, apps: &[AppLaunch]) -> io::Result<bool> {
+        let made = miyooports::launchers(&self.root, &self.home, port, files, apps);
+        let mut changed = false;
+        let old: Vec<String> = files
             .iter()
-            .filter(|f| port.skip.iter().any(|s| f.starts_with(s.as_str())))
+            .filter(|f| f.starts_with(&format!("{}/", miyooports::DIR)) && !f.starts_with(miyooports::HIDDEN))
             .cloned()
             .collect();
-        let made: Vec<(String, Vec<u8>)> = made_shortcut(&self.root, port)
-            .into_iter()
-            .filter(|(path, _)| !rec.files.contains(path))
-            .collect();
-        if skipped.is_empty() && made.is_empty() {
-            return Ok(false);
+        let stale: Vec<String> = old.iter().filter(|f| !made.iter().any(|(p, _)| p == *f)).cloned().collect();
+        if !stale.is_empty() {
+            self.remove_files(&port.id, &stale);
+            files.retain(|f| !stale.contains(f));
+            changed = true;
         }
-        self.remove_files(&port.id, &skipped);
-        rec.files.retain(|f| !skipped.contains(f));
+        if !made.is_empty() {
+            miyooports::ensure_system(&self.root)?;
+        }
         for (path, bytes) in made {
             let dest = self.root.join(&path);
-            fs::create_dir_all(dest.parent().unwrap())?;
-            fs::write(dest, bytes)?;
-            rec.files.push(path);
+            if fs::read(&dest).ok().as_deref() != Some(&bytes[..]) {
+                fs::create_dir_all(dest.parent().unwrap())?;
+                fs::write(&dest, &bytes)?;
+                changed = true;
+            }
+            if !files.contains(&path) {
+                files.push(path);
+            }
         }
-        rec.shortcuts = rec.files.iter().any(|f| f.starts_with(SHORTCUTS));
-        if rec.shortcuts {
-            fs::create_dir_all(self.root.join(GAMES))?;
+        if changed {
+            miyooports::reset_list(&self.root, miyooports::DIR);
         }
-        self.write_record(&rec)?;
-        Ok(true)
+        Ok(changed)
+    }
+
+    /// Whether `files` of a port run Ports Collection's launcher.
+    pub fn needs_ports_collection(&self, files: &[String]) -> bool {
+        miyooports::needs_ports_collection(&self.root, files)
     }
 
     /// A port of the catalog already on the card, put there by hand.
@@ -277,6 +309,16 @@ impl Card {
         }
         progress(Step::Finish);
 
+        // A game's entries in Apps: read for how it starts, not installed.
+        let mut apps = Vec::new();
+        files.retain(|f| {
+            if !miyooports::app_entry(port, f) {
+                return true;
+            }
+            apps.push(miyooports::app_launch(&stage.join(f), f.trim_end_matches("/config.json")));
+            false
+        });
+
         let before = self.installed(&port.id);
         for f in &files {
             let dest = self.root.join(f);
@@ -296,16 +338,9 @@ impl Card {
                 fs::create_dir_all(self.root.join(to))?;
             }
         }
-        for (path, bytes) in made_shortcut(&self.root, port) {
-            let dest = self.root.join(&path);
-            fs::create_dir_all(dest.parent().unwrap())?;
-            if let Some(other) = twin(&path) {
-                let _ = fs::remove_file(self.root.join(other));
-            }
-            fs::write(&dest, bytes)?;
-            files.push(path);
-        }
-        if files.iter().any(|f| f.starts_with(SHORTCUTS)) {
+        self.put_launchers(port, &mut files, &apps)?;
+        // Ports Collection's launcher finds a port's files from Roms/PORTS/Games.
+        if files.iter().any(|f| f.starts_with(miyooports::HIDDEN) || f.starts_with("Roms/PORTS/")) {
             fs::create_dir_all(self.root.join(GAMES))?;
         }
 
@@ -324,8 +359,9 @@ impl Card {
             id: port.id.clone(),
             version: port.version.clone(),
             date: port.date.clone(),
-            shortcuts: files.iter().any(|f| f.starts_with("Roms/PORTS/Shortcuts/")),
+            shortcuts: files.iter().any(|f| f.starts_with(miyooports::DIR)),
             files,
+            apps,
         };
         self.write_record(&rec)?;
         sync();
@@ -346,6 +382,9 @@ impl Card {
             .collect();
         self.remove_files(id, &files);
         fs::remove_file(self.record_path(id))?;
+        if rec.shortcuts {
+            miyooports::reset_list(&self.root, miyooports::DIR);
+        }
         sync();
         Ok(rec)
     }
@@ -377,11 +416,13 @@ impl Card {
         let mut dirs: Vec<PathBuf> = dirs.into_iter().collect();
         dirs.sort_by_key(|d| std::cmp::Reverse(d.components().count()));
         for d in dirs {
-            // App, Roms/PORTS/Games, a Shortcuts category: the card's or other ports'.
+            // App, Roms/PORTS/Games, a Shortcuts category, MiyooPorts' own folders:
+            // the card's or other ports'.
             let n = d.components().count();
             let shared = n == 1
                 || d.starts_with("Roms") && n <= 3
-                || d.starts_with("Roms/PORTS/Shortcuts") && n <= 4;
+                || d.starts_with("Roms/PORTS/Shortcuts") && n <= 4
+                || d.starts_with(miyooports::HIDDEN.trim_end_matches('/')) && n <= 5;
             if !shared {
                 let _ = fs::remove_dir(self.root.join(d));
             }

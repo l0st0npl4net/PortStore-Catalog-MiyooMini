@@ -1,4 +1,4 @@
-//! The Mini's buttons: keyboard keys on an evdev node (Onion's keymap_hw.h).
+//! The Mini's buttons: keyboard keys on an evdev node (OnionOS's keymap_hw.h).
 use std::io::Read;
 use std::os::fd::AsRawFd;
 use std::time::{Duration, Instant};

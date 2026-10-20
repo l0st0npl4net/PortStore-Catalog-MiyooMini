@@ -1,0 +1,13 @@
+{
+"label":"MiyooPorts",
+"icon":"/mnt/SDCARD/Icons/Default/miyooports.png",
+"iconsel":"/mnt/SDCARD/Icons/Default/miyooports.png",
+"launch":"launch.sh",
+"rompath":"../../Roms/MiyooPorts",
+"imgpath":"../../Roms/MiyooPorts/Imgs",
+"gamelist":"../../Roms/MiyooPorts/miyoogamelist.xml",
+"useswap":1,
+"shortname":0,
+"hidebios":0,
+"extlist":"sh"
+}

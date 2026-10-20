@@ -61,7 +61,7 @@ pub struct Port {
     /// config.json for a game that belongs in Games > Ports only.
     #[serde(default)]
     pub skip: Vec<String>,
-    /// A shortcut for Onion's Ports that Port Store makes, for a game released as an app.
+    /// A shortcut for OnionOS's Ports that Port Store makes, for a game released as an app.
     #[serde(default)]
     pub shortcut: Option<Shortcut>,
     /// The user's: never removed or overwritten (a prefix when it ends in '/').
@@ -172,11 +172,6 @@ impl Index {
 impl Port {
     pub fn owned(&self) -> bool {
         self.assets == "owned"
-    }
-
-    /// Whether the port shows in Onion's Games > Ports (shortcuts of its own or made).
-    pub fn in_ports(&self) -> bool {
-        self.shortcut.is_some() || self.take.iter().any(|t| t.starts_with("Roms/PORTS"))
     }
 
     /// Apps (catalog category "app"), as against games.

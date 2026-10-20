@@ -1,9 +1,10 @@
-//! Port Store: installs ports on a Miyoo Mini running Onion, from a catalog of their
+//! Port Store: installs ports on a Miyoo Mini running OnionOS, from a catalog of their
 //! authors' own releases (index.json, built by index/build.py).
 pub mod archive;
 pub mod fetch;
 pub mod index;
 pub mod install;
+pub mod miyooports;
 pub mod needs;
 pub mod ui;
 
@@ -126,7 +127,7 @@ impl Store {
         }
     }
 
-    /// Onion's Ports Collection (Emu/PORTS), which Roms/PORTS shortcuts need.
+    /// OnionOS's Ports Collection (Emu/PORTS), which Roms/PORTS shortcuts need.
     pub fn has_ports_collection(&self) -> bool {
         self.card.root.join("Emu/PORTS/config.json").exists()
     }
@@ -256,18 +257,19 @@ impl Store {
             let _ = fs::remove_file(&file);
         }
         let rec = rec?;
-        if rec.shortcuts {
-            self.mark_import();
+        // Its shortcut runs Ports Collection's launcher: put Ports Collection on the
+        // card first thing, as Package Manager would.
+        if !self.has_ports_collection() && self.card.needs_ports_collection(&rec.files) {
+            // Without it the game says so when started; the install itself stands.
+            if let Err(e) = self.add_ports_collection() {
+                eprintln!("portstore: Ports Collection: {e}");
+            }
         }
         Ok(rec)
     }
 
     pub fn remove(&self, id: &str, port: Option<&Port>) -> io::Result<Installed> {
-        let rec = self.card.remove(id, port)?;
-        if rec.shortcuts {
-            self.mark_import();
-        }
-        Ok(rec)
+        self.card.remove(id, port)
     }
 
     /// Where Package Manager keeps Ports Collection, ready to install.
@@ -275,7 +277,7 @@ impl Store {
         self.card.root.join("App/PackageManager/data/Emu/Ports Collection")
     }
 
-    /// Install Onion's Ports Collection as Package Manager does: its files copied to
+    /// Install OnionOS's Ports Collection as Package Manager does: its files copied to
     /// the card, then its install.sh run where it lies.
     pub fn add_ports_collection(&self) -> io::Result<()> {
         let package = self.ports_collection_package();
@@ -318,7 +320,7 @@ impl Store {
         }
     }
 
-    /// launch.sh runs Onion's ~Import ports when Port Store exits, so new shortcuts
+    /// launch.sh runs OnionOS's ~Import ports when Port Store exits, so new shortcuts
     /// show up (and those of ports still waiting for their game files stay hidden).
     fn mark_import(&self) {
         let _ = fs::create_dir_all(self.card.home.join("cache"));

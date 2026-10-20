@@ -32,7 +32,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 # HEAD: the repository's default branch, whatever it is called (master there).
 CATALOG_URL = "https://raw.githubusercontent.com/Producdevity/MiyooMini-Ports/HEAD/ports.json"
-# Top folders of an Onion SD card; anything else at the top of an archive is a wrapper
+# Top folders of an OnionOS SD card; anything else at the top of an archive is a wrapper
 # folder (stripped when it is the only one) or files for other systems.
 CARD_ROOTS = {"App", "Roms", "Emu", "RApp", "BIOS", "Saves", "Themes", "Icons", "Media"}
 DEFAULT_TAKE = ["App/", "Roms/PORTS/"]
@@ -161,7 +161,7 @@ def sniff(path):
 
 def seven(path):
     """A 7z archive, read with py7zr (pip install py7zr): the device unpacks it with
-    Onion's 7-Zip."""
+    OnionOS's 7-Zip."""
     import py7zr  # only for 7z releases
 
     return py7zr.SevenZipFile(path)
@@ -206,7 +206,7 @@ def read_member(path, kind, name):
 
 
 def shortcut_checks(path, kind, origin, files):
-    """The game files Onion's ~Import ports looks for (GameDir, GameDataFile in each
+    """The game files OnionOS's ~Import ports looks for (GameDir, GameDataFile in each
     .port shortcut) that the release does not bring: the user's to put in place."""
     out = []
     for f in files:
@@ -352,7 +352,7 @@ SIZES = {"thumb": (48, 48), "cover": (224, 168)}
 
 
 def archive_image(path, kind, origin, files):
-    """The picture the release brings: Onion's for Games > Ports (Roms/PORTS/Imgs),
+    """The picture the release brings: OnionOS's for Games > Ports (Roms/PORTS/Imgs),
     else an app's icon."""
     for prefix in ("Roms/PORTS/Imgs/", "App/"):
         found = sorted(f for f in files if f.startswith(prefix) and f.lower().endswith(".png")
@@ -422,7 +422,8 @@ def entry(recipe, catalog, gh, cache, site):
     path = download(asset["browser_download_url"], asset["size"], cache)
     kind = sniff(path) or kind_of(asset["name"])
     digest = sha256(path)
-    if asset.get("digest", "sha256:" + digest) != "sha256:" + digest:
+    # GitHub gives a digest for files uploaded since mid-2025 only (null before).
+    if asset.get("digest") and asset["digest"] != "sha256:" + digest:
         raise ValueError(f"downloaded file does not match GitHub's digest {asset['digest']}")
     strip, files, size, skipped, origin = plan(entries(path, kind), recipe)
     needs = needs_of(recipe, shortcut_checks(path, kind, origin, files))

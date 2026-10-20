@@ -109,7 +109,7 @@ fn dir_members(root: &Path) -> io::Result<Vec<Member>> {
     Ok(out)
 }
 
-/// Unpack a 7z archive into `to` (made empty first) with 7-Zip: Onion's, or
+/// Unpack a 7z archive into `to` (made empty first) with 7-Zip: OnionOS's, or
 /// PORTSTORE_7Z. Its members are then those of `to`, as kind "dir".
 pub fn unpack_7z(archive: &Path, to: &Path) -> io::Result<()> {
     let onion = Path::new("/mnt/SDCARD/.tmp_update/bin/7z");

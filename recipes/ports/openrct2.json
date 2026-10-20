@@ -21,5 +21,5 @@
       ]
     }
   ],
-  "about": "Low-spec build of OpenRCT2 for the Mini. Its own shortcut points Onion's import at the wrong place, so Port Store makes one that shows the game once rct2/Data/g1.dat is in place."
+  "about": "Low-spec build of OpenRCT2 for the Mini. Port Store starts it from MiyooPorts once your RCT2 files are in Roms/PORTS/Games/OpenRCT2mini/rct2 (its own shortcut never shows in OnionOS)."
 }

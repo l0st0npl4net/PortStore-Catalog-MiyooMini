@@ -91,8 +91,6 @@ enum Action {
     InstallMany(Vec<String>),
     Remove(String),
     Refresh,
-    /// Onion's Ports Collection, which Games > Ports needs.
-    PortsCollection,
 }
 
 #[derive(Clone, Debug)]
@@ -124,7 +122,6 @@ enum Finished {
     /// A queue: those installed, those not (with why).
     Many(Vec<String>, Vec<(String, String)>),
     Removed,
-    PortsCollection,
 }
 
 #[derive(PartialEq, Eq)]
@@ -475,13 +472,7 @@ impl App {
                 self.needs.remove(&id);
                 self.check_needs(id);
             }
-            Key::Select if port.in_ports() && !self.store.has_ports_collection() => {
-                self.under.push(self.view.clone());
-                self.view = View::Confirm {
-                    text: "Add Onion's Ports Collection (as Package Manager does)? Games then has Ports, where Port Store's games show.".into(),
-                    yes: Action::PortsCollection,
-                };
-            }
+
             _ => {}
         }
     }
@@ -515,7 +506,6 @@ impl App {
             Action::Install(id) => format!("Installing {}", self.port(id).map_or(id.as_str(), |p| &p.name)),
             Action::Remove(id) => format!("Removing {}", self.port(id).map_or(id.as_str(), |p| &p.name)),
             Action::Refresh => "Downloading the catalog".to_string(),
-            Action::PortsCollection => "Adding Ports Collection".to_string(),
             Action::InstallMany(ids) => format!("Installing {} ports", ids.len()),
         };
         if matches!(self.view, View::Confirm { .. }) {
@@ -525,7 +515,7 @@ impl App {
         self.view = View::Busy { title, step: None };
         let port = match &action {
             Action::Install(id) | Action::Remove(id) => self.port(id).cloned(),
-            Action::Refresh | Action::PortsCollection | Action::InstallMany(_) => None,
+            Action::Refresh | Action::InstallMany(_) => None,
         };
         let queue: Vec<Port> = match &action {
             // Port Store itself last: what is left of the queue still runs on the old one.
@@ -551,7 +541,6 @@ impl App {
                         .map(|_| Finished::Installed(port.id.clone()))
                 }
                 Action::Remove(id) => store.remove(&id, port.as_ref()).map(|_| Finished::Removed),
-                Action::PortsCollection => store.add_ports_collection().map(|_| Finished::PortsCollection),
                 Action::InstallMany(_) => {
                     let (mut done, mut failed) = (Vec::new(), Vec::new());
                     for (n, port) in queue.iter().enumerate() {
@@ -630,10 +619,6 @@ impl App {
                     self.back();
                     self.recount();
                     match result {
-                        Ok(Finished::PortsCollection) => self.message(
-                            "Ports Collection added",
-                            "Games now has Ports. Port Store's games show there once it closes.",
-                        ),
                         Ok(Finished::Installed(id)) => self.installed(&id),
                         Ok(Finished::Many(done, failed)) => self.installed_many(done, failed),
                         Ok(Finished::Removed) => {
@@ -711,19 +696,10 @@ impl App {
             return self.message("Updated", &text);
         }
         let mut text = format!("{} {} is on the card.", port.name, port.version);
-        let shortcuts = port.in_ports();
-        let apps = port.install.roots.iter().any(|r| r.starts_with("App/"));
-        if shortcuts && !self.store.has_ports_collection() {
-            if !port.needs.is_empty() {
-                self.check_needs(id.to_string());
-            }
-            text += " Games shows ports with Onion's Ports Collection, which is not on the card. Add it now (as Package Manager does)?";
-            self.under.push(self.view.clone());
-            self.view = View::Confirm { text, yes: Action::PortsCollection };
-            return;
-        } else if shortcuts {
-            text += " It is in Games → Ports once Port Store closes.";
-        } else if apps {
+        let in_miyooports = self.store.card.installed(id).is_some_and(|r| r.shortcuts);
+        if in_miyooports {
+            text += " It is in Games → MiyooPorts.";
+        } else if port.is_app() {
             text += " It is in Apps.";
         }
         if !port.needs.is_empty() {
@@ -750,13 +726,9 @@ impl App {
             View::List => self.draw_list(c),
             View::Details { id, scroll } => self.draw_details(c, &id, scroll),
             View::Manual { at, scroll } => self.draw_manual(c, at, scroll),
-            View::Confirm { text, yes } => {
+            View::Confirm { text, .. } => {
                 self.draw_under(c);
-                let title = match yes {
-                    Action::PortsCollection => "Ports Collection",
-                    _ => "Are you sure?",
-                };
-                dialog(c, title, &text, None, "A  Yes      B  No");
+                dialog(c, "Are you sure?", &text, None, "A  Yes      B  No");
             }
             View::Busy { title, step } => {
                 self.draw_under(c);
@@ -1015,10 +987,7 @@ impl App {
             }
             lines.push((8, DIM, String::new()));
         }
-        if port.in_ports() && !self.store.has_ports_collection() {
-            para(c, &mut lines, 15, WARN, "Ports Collection is not on the card, so Games has no Ports: press Select to add it.");
-            lines.push((8, DIM, String::new()));
-        }
+
         if !port.url.is_empty() {
             para(c, &mut lines, 14, ACCENT, port.url.trim_start_matches("https://"));
         }
@@ -1053,9 +1022,7 @@ impl App {
         if !port.needs.is_empty() {
             keys.push("Y Check again");
         }
-        if port.in_ports() && !self.store.has_ports_collection() {
-            keys.push("Select Ports");
-        }
+
         keys.push("B Back");
         footer(c, "", &keys.join("   "));
     }

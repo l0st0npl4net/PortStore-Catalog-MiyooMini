@@ -208,7 +208,7 @@ fn check_one(card: &Path, need: &Need, roms: &mut Roms, hashing: &mut dyn FnMut(
 }
 
 /// `path` on the card, or a file of its name (in any case) up to two folders down
-/// from its folder: where Onion's ~Import ports accepts a game's data file.
+/// from its folder: where OnionOS's ~Import ports accepts a game's data file.
 fn find_like_import(card: &Path, path: &str) -> Option<String> {
     if card.join(path).exists() {
         return Some(path.to_string());

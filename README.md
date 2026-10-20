@@ -1,7 +1,7 @@
 # Port Store for Miyoo Mini
 
 Install, update and remove ports right on a Miyoo Mini or Mini Plus running
-[Onion](https://github.com/OnionUI/Onion): no computer, no copying folders by hand.
+[OnionOS](https://github.com/OnionUI/Onion): no computer, no copying folders by hand.
 
 ![Games](docs/screenshots/games.png) ![A port's page](docs/screenshots/port.png)
 
@@ -11,7 +11,8 @@ Install, update and remove ports right on a Miyoo Mini or Mini Plus running
   like Moonlight, Syncthing or Better WiFi.
 - **Games** and **Apps** tabs, genres (Select), pictures, and an **Updates** tab when a port's
   author publishes a new version.
-- Games go to Onion's **Games → Ports**, next to your consoles.
+- Games go to their own system, **Games → MiyooPorts**, next to your consoles, whatever
+  way their authors packed them. Apps stay in Apps.
 - For games that need your own files (a ROM, the game's data) Port Store says what to put
   where and checks it: N64 ROMs are recognised by checksum, in any byte order.
 - Everything is downloaded from the authors' own GitHub releases and checked against the
@@ -32,8 +33,8 @@ Port Store draws for the 640×480 screen: the Mini v4 and Mini Flip are not supp
 through the folder `App/PortStore/downloads` on the card. See
 [Without Wi-Fi](#without-wi-fi) below.
 
-**Games → Ports** needs Onion's *Ports Collection*. If it is not on the card, Port Store
-offers to add it (as Package Manager would).
+Many ports start through OnionOS's *Ports Collection*: Port Store adds it by itself when a
+game needs it (as Package Manager would). Its own Ports entry keeps OnionOS's games.
 
 ## Without Wi-Fi
 
@@ -83,7 +84,7 @@ Files stay in `downloads` after installing: delete them to free space.
 - The catalog is downloaded each time Port Store starts. When a new Port Store is out, it
   offers to update itself at once and starts again by itself.
 
-Troubleshooting: Port Store writes `App/PortStore/cache/portstore.log`; Onion's import of
+Troubleshooting: Port Store writes `App/PortStore/cache/portstore.log`; OnionOS's import of
 ports writes `Roms/PORTS/import.log`.
 
 ## Thanks
@@ -94,7 +95,7 @@ ports writes `Roms/PORTS/import.log`.
   catalog of Mini ports; Port Store takes its categories, status, notes and pictures, and
   lists its other entries under More.
 - Every port's author, whose releases Port Store installs, and
-  [Onion](https://github.com/OnionUI/Onion).
+  [OnionOS](https://github.com/OnionUI/Onion).
 
 ---
 
@@ -108,7 +109,7 @@ ports writes `Roms/PORTS/import.log`.
 - `app/` — Port Store itself (Rust, draws to the framebuffer, no SDL).
 
 Only the ports' pictures are published with the index (`img/`: 48×48 for the list, up to
-224×168 for a port's page), taken from the release (Onion's `Roms/PORTS/Imgs`, or an app's
+224×168 for a port's page), taken from the release (OnionOS's `Roms/PORTS/Imgs`, or an app's
 `icon.png`) or else from the catalog's `image`. The build needs Pillow for them
 (`pip install pillow`); without it the index is built without pictures.
 
@@ -137,13 +138,13 @@ Only the ports' pictures are published with the index (`img/`: 48×48 for the li
 | `take` | path prefixes (from the card's root) that are installed; default `App/`, `Roms/PORTS/` |
 | `into` | a folder the whole archive goes into (an app zipped without its `App/<Name>/`) |
 | `map` | `[from, to]` prefixes for releases laid out otherwise (`["Games/", "Roms/PORTS/Games/"]`); the first match wins, the rest is left out |
-| `skip` | card paths not installed though the release has them (`App/<Game>/config.json`: a game in Games → Ports only, not in Apps) |
-| `shortcut` | `{ "launch": "App/X/launch.sh", "image": "App/X/icon.png", "dir": …, "data": … }`: Port Store makes an Onion Ports shortcut (for a game released as an app, or one whose own shortcut does not work); `~Import ports` shows it once `data` is up to two folders below `dir` (default: the launcher) |
+| `skip` | card paths not installed though the release has them |
+| `shortcut` | `{ "launch": "Roms/PORTS/Games/X/launch.sh", "image": "Roms/PORTS/Imgs/X.png" }`: how the game starts from MiyooPorts, when its own shortcut does not do (OpenRCT2's) |
 | `keep` | files of the release the user changes (settings): installed once, then never overwritten or removed (prefix if it ends in `/`). Files the release does not have (saves, game data) are never touched anyway |
-| `needs` | what the user brings: `what`, `hint`, `check` (paths that exist once it is in place), or a ROM by `sha1` looked for in `search` (`n64`: any byte order; `title`: header title, to tell another version of the same game). Game data checks are also read from the release's Onion shortcuts |
+| `needs` | what the user brings: `what`, `hint`, `check` (paths that exist once it is in place), or a ROM by `sha1` looked for in `search` (`n64`: any byte order; `title`: header title, to tell another version of the same game). Game data checks are also read from the release's OnionOS shortcuts |
 
 Releases may be zip, tar, tar.gz or 7z (the build reads 7z with py7zr, the device unpacks it
-with Onion's 7-Zip). A recipe failing in two builds in a row opens (or updates) the issue
+with OnionOS's 7-Zip). A recipe failing in two builds in a row opens (or updates) the issue
 "Recipes failing"; it closes by itself once they build again.
 
 Build the index locally (without `GITHUB_TOKEN`, releases are read from github.com pages):
@@ -173,11 +174,23 @@ catalog, pictures, ROM checksums).
 
 Install is file by file: unpacked into a staging folder first, then moved into place; updates
 remove only files the new version dropped; removal leaves `keep` files and anything Port
-Store did not put there. After changes to `Roms/PORTS` shortcuts, Onion's `~Import ports`
-runs when Port Store exits; `Roms/PORTS/Games` is made with them (the import reads a
-shortcut's `GameDir` from there, `../../../App/<Game>` too, and Ports Collection does not
-make it). On start, installed ports are brought in line with the catalog (files it now skips
-go, shortcuts it now makes are made).
+Store did not put there.
+
+**MiyooPorts** is a system of Port Store's (`Emu/MiyooPorts`, icon
+`Icons/Default/miyooports.png`: an icon pack may bring its own `miyooports.png`). Each game
+gets a launcher, `Roms/MiyooPorts/<Game>.sh`, with its picture in `Roms/MiyooPorts/Imgs`
+(the release's own for Ports, else the catalog's):
+
+- a release for Ports Collection: its shortcuts, pictures and manuals go to
+  `Roms/MiyooPorts/.ports` (hidden from the lists), and the launcher runs the shortcut through
+  Ports Collection's `Emu/PORTS/launch.sh`; `Roms/PORTS/Games` holds the game as before;
+- a game released as an app: its `App/<Name>/config.json` (its entry in Apps) is read for how
+  it starts and not installed; the launcher starts it in its folder;
+- before the game, the launcher checks the files the user brings (`needs` with `check`, as
+  `~Import ports` would) and says on screen what is missing and where it goes.
+
+On start, installed ports are brought in line with how Port Store installs them now (ports of
+Port Store 0.3 move from Ports and Apps into MiyooPorts; files the catalog now skips go).
 
 Commands for testing (also off the device, with `PORTSTORE_CARD`, `PORTSTORE_HOME`):
 `portstore list | install ID | remove ID | needs ID | refresh | shots DIR [ID…]`.
