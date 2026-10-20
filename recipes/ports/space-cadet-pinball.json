@@ -1,0 +1,6 @@
+{
+  "id": "space-cadet-pinball",
+  "catalog": "3D Pinball Space Cadet",
+  "github": "cacuracaptors/spacecadetpinball-miyoomini",
+  "asset": "^Pinball-Miyoo-v[\\d.]+\\.zip$"
+}

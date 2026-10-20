@@ -1,0 +1,38 @@
+{
+  "id": "n64-harvest-moon-64",
+  "name": "Harvest Moon 64",
+  "group": "Miyoo64 (N64)",
+  "github": "mr-finster/miyoo64",
+  "asset": "^HarvestMoon64-miyoo\\.zip$",
+  "take": [
+    "App/HarvestMoon64/",
+    "Roms/PORTS/"
+  ],
+  "keep": [
+    "App/HarvestMoon64/rom.z64",
+    "App/HarvestMoon64/data/"
+  ],
+  "needs": [
+    {
+      "what": "ROM: Harvest Moon 64 (USA)",
+      "hint": "Put a .z64, .v64 or .n64 dump in Roms/N64 (any name) or as App/HarvestMoon64/rom.z64.",
+      "sha1": "90631460f1876a14849df0541d534012b410a34c",
+      "search": [
+        "Roms/N64",
+        "App/HarvestMoon64"
+      ],
+      "n64": true,
+      "title": "HARVESTMOON64"
+    }
+  ],
+  "categories": [
+    "simulation"
+  ],
+  "status": "playable",
+  "assets": "owned",
+  "porter": [
+    "mr-finster"
+  ],
+  "about": "Native N64 port built from the Harvest Moon 64 decompilation. No emulation: runs on the Mini's CPU with a software renderer. Save states (9 slots + auto save). First start takes about a minute.",
+  "url": "https://github.com/mr-finster/miyoo64/tree/main/harvest-moon-64"
+}

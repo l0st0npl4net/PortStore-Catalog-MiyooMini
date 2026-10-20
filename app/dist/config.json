@@ -1,0 +1,6 @@
+{
+"label":"Port Store",
+"icon":"icon.png",
+"launch":"launch.sh",
+"description":"Install and update ports"
+}

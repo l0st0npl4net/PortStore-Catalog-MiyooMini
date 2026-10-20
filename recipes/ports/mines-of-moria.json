@@ -1,0 +1,6 @@
+{
+  "id": "mines-of-moria",
+  "catalog": "Mines of Moria",
+  "github": "mxmgorin/moria-handheld",
+  "asset": "^minesofmoria-onionos-port\\.zip$"
+}

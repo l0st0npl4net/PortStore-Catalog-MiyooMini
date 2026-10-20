@@ -1,0 +1,9 @@
+{
+  "id": "rewind",
+  "catalog": "Rewind",
+  "github": "snyderman3000/rewind",
+  "asset": "^Rewind-v[\\d.]+-OnionOS\\.zip$",
+  "keep": [
+    "App/Rewind/config.json"
+  ]
+}

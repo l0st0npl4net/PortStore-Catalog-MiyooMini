@@ -1,0 +1,38 @@
+{
+  "id": "n64-super-mario-64",
+  "name": "Super Mario 64",
+  "group": "Miyoo64 (N64)",
+  "github": "mr-finster/miyoo64",
+  "asset": "^SuperMario64-miyoo\\.zip$",
+  "take": [
+    "App/SuperMario64/",
+    "Roms/PORTS/"
+  ],
+  "keep": [
+    "App/SuperMario64/rom.z64",
+    "App/SuperMario64/data/"
+  ],
+  "needs": [
+    {
+      "what": "ROM: Super Mario 64 (USA)",
+      "hint": "Put a .z64, .v64 or .n64 dump in Roms/N64 (any name) or as App/SuperMario64/rom.z64.",
+      "sha1": "9bef1128717f958171a4afac3ed78ee2bb4e86ce",
+      "search": [
+        "Roms/N64",
+        "App/SuperMario64"
+      ],
+      "n64": true,
+      "title": "SUPER MARIO 64"
+    }
+  ],
+  "categories": [
+    "platform"
+  ],
+  "status": "playable",
+  "assets": "owned",
+  "porter": [
+    "mr-finster"
+  ],
+  "about": "Native N64 port built from the Super Mario 64 decompilation. No emulation: runs on the Mini's CPU with a software renderer. Save states (9 slots + auto save). First start takes about a minute.",
+  "url": "https://github.com/mr-finster/miyoo64/tree/main/super-mario-64"
+}

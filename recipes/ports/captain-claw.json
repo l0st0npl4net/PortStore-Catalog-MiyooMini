@@ -1,0 +1,17 @@
+{
+  "id": "captain-claw",
+  "catalog": "Captain Claw",
+  "github": "ArticlessCZ-Coder/captain-claw-miyoo",
+  "asset": "^captain-claw-miyoo-v[\\d.]+-SDcard\\.zip$",
+  "needs": [
+    {
+      "what": "CLAW.REZ from your Captain Claw copy",
+      "hint": "Copy it into Roms/PORTS/Games/Captain Claw.",
+      "check": []
+    }
+  ],
+  "keep": [
+    "Roms/PORTS/Games/Captain Claw/SAVES.XML",
+    "Roms/PORTS/Games/Captain Claw/config.xml"
+  ]
+}

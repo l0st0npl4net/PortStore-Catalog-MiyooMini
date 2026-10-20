@@ -1,0 +1,52 @@
+# Builds the catalog (index.json) every day and when recipes change, and publishes it
+# on GitHub Pages: Settings > Pages > Source: GitHub Actions.
+name: index
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ["recipes/**", "index/**", ".github/workflows/index.yml"]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: .cache
+          key: releases-${{ github.run_id }}
+          restore-keys: releases-
+      - name: Build index.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          previous="https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}/index.json"
+          python3 index/build.py --out site/index.json --cache .cache --previous "$previous"
+          # Only the files of the releases in the index stay in the cache.
+          python3 index/prune_cache.py site/index.json .cache
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

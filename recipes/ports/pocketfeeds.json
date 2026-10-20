@@ -1,0 +1,10 @@
+{
+  "id": "pocketfeeds",
+  "catalog": "PocketFeeds",
+  "github": "IC-0n417/PocketFeeds",
+  "asset": "^PocketFeeds-OnionOS-[\\d.]+\\.zip$",
+  "keep": [
+    "App/PocketFeeds/subreddits.txt",
+    "App/PocketFeeds/config.json"
+  ]
+}

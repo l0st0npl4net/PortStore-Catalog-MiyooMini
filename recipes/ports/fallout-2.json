@@ -1,0 +1,13 @@
+{
+  "id": "fallout-2",
+  "catalog": "Fallout 2",
+  "github": "cacuracaptors/fallout2-ce-miyoomini",
+  "asset": "^Fallout2-Miyoo-v[\\d.]+\\.zip$",
+  "needs": [
+    {
+      "what": "Fallout 2 game files (master.dat, critter.dat, patch000.dat, data folder)",
+      "hint": "See the port's page for where they go.",
+      "check": []
+    }
+  ]
+}

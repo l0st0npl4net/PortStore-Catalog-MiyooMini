@@ -1,0 +1,38 @@
+{
+  "id": "n64-goldeneye-007",
+  "name": "GoldenEye 007",
+  "group": "Miyoo64 (N64)",
+  "github": "mr-finster/miyoo64",
+  "asset": "^GoldenEye-miyoo\\.zip$",
+  "take": [
+    "App/GoldenEye/",
+    "Roms/PORTS/"
+  ],
+  "keep": [
+    "App/GoldenEye/rom.z64",
+    "App/GoldenEye/data/"
+  ],
+  "needs": [
+    {
+      "what": "ROM: GoldenEye 007 (USA)",
+      "hint": "Put a .z64, .v64 or .n64 dump in Roms/N64 (any name) or as App/GoldenEye/rom.z64.",
+      "sha1": "abe01e4aeb033b6c0836819f549c791b26cfde83",
+      "search": [
+        "Roms/N64",
+        "App/GoldenEye"
+      ],
+      "n64": true,
+      "title": "GOLDENEYE"
+    }
+  ],
+  "categories": [
+    "fps"
+  ],
+  "status": "playable",
+  "assets": "owned",
+  "porter": [
+    "mr-finster"
+  ],
+  "about": "Native N64 port built from the GoldenEye 007 decompilation. No emulation: runs on the Mini's CPU with a software renderer. Save states (9 slots + auto save). First start takes about a minute.",
+  "url": "https://github.com/mr-finster/miyoo64/tree/main/goldeneye-007"
+}

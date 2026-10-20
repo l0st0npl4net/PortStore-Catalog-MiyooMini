@@ -1,0 +1,38 @@
+{
+  "id": "n64-star-fox-64",
+  "name": "Star Fox 64",
+  "group": "Miyoo64 (N64)",
+  "github": "mr-finster/miyoo64",
+  "asset": "^StarFox64-miyoo\\.zip$",
+  "take": [
+    "App/StarFox64/",
+    "Roms/PORTS/"
+  ],
+  "keep": [
+    "App/StarFox64/rom.z64",
+    "App/StarFox64/data/"
+  ],
+  "needs": [
+    {
+      "what": "ROM: Star Fox 64 (USA), version 1.1",
+      "hint": "Put a .z64, .v64 or .n64 dump in Roms/N64 (any name) or as App/StarFox64/rom.z64.",
+      "sha1": "09f0d105f476b00efa5303a3ebc42e60a7753b7a",
+      "search": [
+        "Roms/N64",
+        "App/StarFox64"
+      ],
+      "n64": true,
+      "title": "STARFOX64"
+    }
+  ],
+  "categories": [
+    "shooter"
+  ],
+  "status": "playable",
+  "assets": "owned",
+  "porter": [
+    "mr-finster"
+  ],
+  "about": "Native N64 port built from the Star Fox 64 decompilation. No emulation: runs on the Mini's CPU with a software renderer. Save states (9 slots + auto save). First start takes about a minute.",
+  "url": "https://github.com/mr-finster/miyoo64/tree/main/star-fox-64"
+}

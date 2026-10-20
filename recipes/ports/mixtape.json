@@ -1,0 +1,6 @@
+{
+  "id": "mixtape",
+  "catalog": "Mixtape",
+  "github": "snyderman3000/mixtape",
+  "asset": "^Mixtape-v[\\d.]+-OnionOS\\.zip$"
+}

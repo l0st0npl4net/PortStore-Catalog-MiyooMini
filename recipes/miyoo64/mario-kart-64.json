@@ -1,0 +1,38 @@
+{
+  "id": "n64-mario-kart-64",
+  "name": "Mario Kart 64",
+  "group": "Miyoo64 (N64)",
+  "github": "mr-finster/miyoo64",
+  "asset": "^MarioKart64-miyoo\\.zip$",
+  "take": [
+    "App/MarioKart64/",
+    "Roms/PORTS/"
+  ],
+  "keep": [
+    "App/MarioKart64/rom.z64",
+    "App/MarioKart64/data/"
+  ],
+  "needs": [
+    {
+      "what": "ROM: Mario Kart 64 (USA)",
+      "hint": "Put a .z64, .v64 or .n64 dump in Roms/N64 (any name) or as App/MarioKart64/rom.z64.",
+      "sha1": "579c48e211ae952530ffc8738709f078d5dd215e",
+      "search": [
+        "Roms/N64",
+        "App/MarioKart64"
+      ],
+      "n64": true,
+      "title": "MARIOKART64"
+    }
+  ],
+  "categories": [
+    "racing"
+  ],
+  "status": "playable",
+  "assets": "owned",
+  "porter": [
+    "mr-finster"
+  ],
+  "about": "Native N64 port built from the Mario Kart 64 decompilation. No emulation: runs on the Mini's CPU with a software renderer. Save states (9 slots + auto save). First start takes about a minute.",
+  "url": "https://github.com/mr-finster/miyoo64/tree/main/mario-kart-64"
+}

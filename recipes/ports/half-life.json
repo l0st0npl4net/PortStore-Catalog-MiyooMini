@@ -1,0 +1,14 @@
+{
+  "id": "half-life",
+  "catalog": "Half-Life",
+  "github": "IC-0n417/half-life-miyoo-mini-plus",
+  "asset": "^Half-Life-Miyoo-Mini-Plus-OnionOS-.*\\.zip$",
+  "prerelease": true,
+  "needs": [
+    {
+      "what": "Half-Life game files (valve folder)",
+      "hint": "See the port's page for where they go.",
+      "check": []
+    }
+  ]
+}

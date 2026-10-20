@@ -1,0 +1,6 @@
+{
+  "id": "monk-tower",
+  "catalog": "Monk Tower",
+  "github": "mxmgorin/monktower-handheld",
+  "asset": "^monktower-onionos\\.zip$"
+}

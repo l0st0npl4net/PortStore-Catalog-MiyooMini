@@ -1,0 +1,39 @@
+{
+  "id": "n64-ocarina-of-time",
+  "name": "The Legend of Zelda: Ocarina of Time",
+  "group": "Miyoo64 (N64)",
+  "github": "mr-finster/miyoo64",
+  "asset": "^OcarinaOfTime-miyoo\\.zip$",
+  "take": [
+    "App/OcarinaOfTime/",
+    "Roms/PORTS/"
+  ],
+  "keep": [
+    "App/OcarinaOfTime/rom.z64",
+    "App/OcarinaOfTime/data/"
+  ],
+  "needs": [
+    {
+      "what": "ROM: The Legend of Zelda: Ocarina of Time (USA), v1.0",
+      "hint": "Put a .z64, .v64 or .n64 dump in Roms/N64 (any name) or as App/OcarinaOfTime/rom.z64.",
+      "sha1": "ad69c91157f6705e8ab06c79fe08aad47bb57ba7",
+      "search": [
+        "Roms/N64",
+        "App/OcarinaOfTime"
+      ],
+      "n64": true,
+      "title": "THE LEGEND OF ZELDA"
+    }
+  ],
+  "categories": [
+    "action",
+    "adventure"
+  ],
+  "status": "playable",
+  "assets": "owned",
+  "porter": [
+    "mr-finster"
+  ],
+  "about": "Native N64 port built from the The Legend of Zelda: Ocarina of Time decompilation. No emulation: runs on the Mini's CPU with a software renderer. Save states (9 slots + auto save). First start takes about a minute.",
+  "url": "https://github.com/mr-finster/miyoo64/tree/main/ocarina-of-time"
+}

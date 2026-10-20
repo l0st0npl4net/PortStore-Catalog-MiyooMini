@@ -1,0 +1,39 @@
+{
+  "id": "n64-majoras-mask",
+  "name": "The Legend of Zelda: Majora's Mask",
+  "group": "Miyoo64 (N64)",
+  "github": "mr-finster/miyoo64",
+  "asset": "^MajorasMask-miyoo\\.zip$",
+  "take": [
+    "App/MajorasMask/",
+    "Roms/PORTS/"
+  ],
+  "keep": [
+    "App/MajorasMask/rom.z64",
+    "App/MajorasMask/data/"
+  ],
+  "needs": [
+    {
+      "what": "ROM: The Legend of Zelda: Majora's Mask (USA)",
+      "hint": "Put a .z64, .v64 or .n64 dump in Roms/N64 (any name) or as App/MajorasMask/rom.z64.",
+      "sha1": "d6133ace5afaa0882cf214cf88daba39e266c078",
+      "search": [
+        "Roms/N64",
+        "App/MajorasMask"
+      ],
+      "n64": true,
+      "title": "ZELDA MAJORA'S MASK"
+    }
+  ],
+  "categories": [
+    "action",
+    "adventure"
+  ],
+  "status": "beta",
+  "assets": "owned",
+  "porter": [
+    "mr-finster"
+  ],
+  "about": "Native N64 port built from the The Legend of Zelda: Majora's Mask decompilation. No emulation: runs on the Mini's CPU with a software renderer. Save states (9 slots + auto save). First start takes about a minute.",
+  "url": "https://github.com/mr-finster/miyoo64/tree/main/majoras-mask"
+}

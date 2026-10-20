@@ -1,0 +1,6 @@
+{
+  "id": "panel-attack",
+  "catalog": "Panel Attack",
+  "github": "snyderman3000/panelattack-miyoo",
+  "asset": "^PanelAttack-miyoo-v[\\d.]+\\.zip$"
+}

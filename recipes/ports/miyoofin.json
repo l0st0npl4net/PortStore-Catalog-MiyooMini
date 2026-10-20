@@ -1,0 +1,7 @@
+{
+  "id": "miyoofin",
+  "catalog": "MiyooFin",
+  "github": "S3ggie/MiyooFin",
+  "asset": "^MiyooFin\\.zip$",
+  "into": "App/MiyooFin/"
+}

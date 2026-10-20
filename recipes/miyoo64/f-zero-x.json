@@ -1,0 +1,38 @@
+{
+  "id": "n64-f-zero-x",
+  "name": "F-Zero X",
+  "group": "Miyoo64 (N64)",
+  "github": "mr-finster/miyoo64",
+  "asset": "^FZeroX-miyoo\\.zip$",
+  "take": [
+    "App/FZeroX/",
+    "Roms/PORTS/"
+  ],
+  "keep": [
+    "App/FZeroX/rom.z64",
+    "App/FZeroX/data/"
+  ],
+  "needs": [
+    {
+      "what": "ROM: F-Zero X (USA)",
+      "hint": "Put a .z64, .v64 or .n64 dump in Roms/N64 (any name) or as App/FZeroX/rom.z64.",
+      "sha1": "5f658e88ffa9de23cba6986a8fd3d3a90d7b4340",
+      "search": [
+        "Roms/N64",
+        "App/FZeroX"
+      ],
+      "n64": true,
+      "title": "F-ZERO X"
+    }
+  ],
+  "categories": [
+    "racing"
+  ],
+  "status": "playable",
+  "assets": "owned",
+  "porter": [
+    "mr-finster"
+  ],
+  "about": "Native N64 port built from the F-Zero X decompilation. No emulation: runs on the Mini's CPU with a software renderer. Save states (9 slots + auto save). First start takes about a minute.",
+  "url": "https://github.com/mr-finster/miyoo64/tree/main/f-zero-x"
+}

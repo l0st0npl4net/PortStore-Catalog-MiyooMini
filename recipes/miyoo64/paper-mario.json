@@ -1,0 +1,38 @@
+{
+  "id": "n64-paper-mario",
+  "name": "Paper Mario",
+  "group": "Miyoo64 (N64)",
+  "github": "mr-finster/miyoo64",
+  "asset": "^PaperMario-miyoo\\.zip$",
+  "take": [
+    "App/PaperMario/",
+    "Roms/PORTS/"
+  ],
+  "keep": [
+    "App/PaperMario/rom.z64",
+    "App/PaperMario/data/"
+  ],
+  "needs": [
+    {
+      "what": "ROM: Paper Mario (USA)",
+      "hint": "Put a .z64, .v64 or .n64 dump in Roms/N64 (any name) or as App/PaperMario/rom.z64.",
+      "sha1": "3837f44cda784b466c9a2d99df70d77c322b97a0",
+      "search": [
+        "Roms/N64",
+        "App/PaperMario"
+      ],
+      "n64": true,
+      "title": "PAPER MARIO"
+    }
+  ],
+  "categories": [
+    "rpg"
+  ],
+  "status": "playable",
+  "assets": "owned",
+  "porter": [
+    "mr-finster"
+  ],
+  "about": "Native N64 port built from the Paper Mario decompilation. No emulation: runs on the Mini's CPU with a software renderer. Save states (9 slots + auto save). First start takes about a minute.",
+  "url": "https://github.com/mr-finster/miyoo64/tree/main/paper-mario"
+}

@@ -1,0 +1,7 @@
+{
+  "id": "kids-mode",
+  "catalog": "onion-kids-mode",
+  "github": "daverad/onion-kids-mode",
+  "asset": "^KidsMode\\.zip$",
+  "into": "App/KidsMode/"
+}

@@ -1,0 +1,6 @@
+{
+  "id": "tennis-vs-zombies",
+  "catalog": "Tennis vs Zombies",
+  "github": "gutospinelli/TennisVsZombies-MiyooMini",
+  "asset": "^TennisVsZombies_MiyooMini_v[\\d.]+\\.zip$"
+}

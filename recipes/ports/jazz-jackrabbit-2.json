@@ -1,0 +1,13 @@
+{
+  "id": "jazz-jackrabbit-2",
+  "catalog": "Jazz Jackrabbit 2",
+  "github": "ArticlessCZ-Coder/jazz2-miyoo",
+  "asset": "^jazz2-miyoo-v[\\d.]+-SDcard\\.zip$",
+  "needs": [
+    {
+      "what": "Jazz Jackrabbit 2 game data, converted on a PC",
+      "hint": "The release's Tools folder (Windows) converts your copy; see the port's page.",
+      "check": []
+    }
+  ]
+}

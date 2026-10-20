@@ -1,0 +1,7 @@
+{
+  "id": "petals",
+  "catalog": "Petals Around the Rose",
+  "github": "schizophreek/petals",
+  "asset": "^petals\\.zip$",
+  "into": "App/Petals/"
+}

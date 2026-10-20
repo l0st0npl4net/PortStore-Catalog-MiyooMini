@@ -1,0 +1,38 @@
+{
+  "id": "n64-perfect-dark",
+  "name": "Perfect Dark",
+  "group": "Miyoo64 (N64)",
+  "github": "mr-finster/miyoo64",
+  "asset": "^PerfectDark-miyoo\\.zip$",
+  "take": [
+    "App/PerfectDark/",
+    "Roms/PORTS/"
+  ],
+  "keep": [
+    "App/PerfectDark/rom.z64",
+    "App/PerfectDark/data/"
+  ],
+  "needs": [
+    {
+      "what": "ROM: Perfect Dark (USA), Rev 1 (version 1.1)",
+      "hint": "Put a .z64, .v64 or .n64 dump in Roms/N64 (any name) or as App/PerfectDark/rom.z64.",
+      "sha1": "af8788ac4d1a57260eae9c53ffe851fcf2a3319b",
+      "search": [
+        "Roms/N64",
+        "App/PerfectDark"
+      ],
+      "n64": true,
+      "title": "Perfect Dark"
+    }
+  ],
+  "categories": [
+    "fps"
+  ],
+  "status": "playable",
+  "assets": "owned",
+  "porter": [
+    "mr-finster"
+  ],
+  "about": "Native N64 port built from the Perfect Dark decompilation. No emulation: runs on the Mini's CPU with a software renderer. Save states (9 slots + auto save). First start takes about a minute.",
+  "url": "https://github.com/mr-finster/miyoo64/tree/main/perfect-dark"
+}

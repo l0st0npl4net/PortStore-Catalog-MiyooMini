@@ -1,0 +1,13 @@
+{
+  "id": "fallout",
+  "catalog": "Fallout",
+  "github": "cacuracaptors/fallout1-ce-miyoomini",
+  "asset": "^Fallout1-Miyoo-v[\\d.]+\\.zip$",
+  "needs": [
+    {
+      "what": "Fallout game files (master.dat, critter.dat, data folder)",
+      "hint": "See the port's page for where they go.",
+      "check": []
+    }
+  ]
+}

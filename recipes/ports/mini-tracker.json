@@ -1,0 +1,7 @@
+{
+  "id": "mini-tracker",
+  "catalog": "Mini Tracker",
+  "github": "k2-ant/mini-tracker",
+  "asset": "^MiniTracker\\.zip$",
+  "into": "App/MiniTracker/"
+}

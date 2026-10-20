@@ -1,0 +1,38 @@
+{
+  "id": "n64-super-smash-bros",
+  "name": "Super Smash Bros.",
+  "group": "Miyoo64 (N64)",
+  "github": "mr-finster/miyoo64",
+  "asset": "^SuperSmashBros-miyoo\\.zip$",
+  "take": [
+    "App/SuperSmashBros/",
+    "Roms/PORTS/"
+  ],
+  "keep": [
+    "App/SuperSmashBros/rom.z64",
+    "App/SuperSmashBros/data/"
+  ],
+  "needs": [
+    {
+      "what": "ROM: Super Smash Bros. (USA)",
+      "hint": "Put a .z64, .v64 or .n64 dump in Roms/N64 (any name) or as App/SuperSmashBros/rom.z64.",
+      "sha1": "e2929e10fccc0aa84e5776227e798abc07cedabf",
+      "search": [
+        "Roms/N64",
+        "App/SuperSmashBros"
+      ],
+      "n64": true,
+      "title": "SMASH BROTHERS"
+    }
+  ],
+  "categories": [
+    "fighting"
+  ],
+  "status": "playable",
+  "assets": "owned",
+  "porter": [
+    "mr-finster"
+  ],
+  "about": "Native N64 port built from the Super Smash Bros. decompilation. No emulation: runs on the Mini's CPU with a software renderer. Save states (9 slots + auto save). First start takes about a minute.",
+  "url": "https://github.com/mr-finster/miyoo64/tree/main/super-smash-bros"
+}

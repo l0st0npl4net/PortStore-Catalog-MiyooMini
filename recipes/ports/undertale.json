@@ -1,0 +1,16 @@
+{
+  "id": "undertale",
+  "catalog": "Undertale",
+  "github": "cobaltgit/Butterscotch",
+  "asset": "^Undertale_MiyooMini_Onion_v\\d+\\.zip$",
+  "tag": "^onion-",
+  "needs": [
+    {
+      "what": "Undertale game data (data.win and the rest of the game folder)",
+      "hint": "Copy the files of your Undertale (Windows) copy into Roms/PORTS/Games/Undertale.",
+      "check": [
+        "Roms/PORTS/Games/Undertale/data.win"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+{
+  "id": "elasto-mania",
+  "catalog": "Elasto Mania",
+  "github": "neri-rnd/elma-miyoo",
+  "asset": "^elma-miyoo-v[\\d.]+\\.zip$"
+}

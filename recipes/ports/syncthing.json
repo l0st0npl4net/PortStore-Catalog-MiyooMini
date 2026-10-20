@@ -1,0 +1,6 @@
+{
+  "id": "syncthing",
+  "catalog": "Syncthing",
+  "github": "XK9274/syncthing-app-miyoo",
+  "asset": "^syncthing-app-miyoo-v[\\d.]+\\.zip$"
+}

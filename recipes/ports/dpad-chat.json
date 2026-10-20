@@ -1,0 +1,6 @@
+{
+  "id": "dpad-chat",
+  "catalog": "dpad-chat",
+  "github": "SartajBhuvaji/dpad-chat",
+  "asset": "^DPadChat-v[\\d.]+\\.zip$"
+}

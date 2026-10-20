@@ -1,0 +1,15 @@
+{
+  "id": "tomb-raider",
+  "catalog": "Tomb Raider",
+  "github": "cacuracaptors/OpenLara-miyoomini",
+  "asset": "^OpenLara-Miyoo-v[\\d.]+\\.zip$",
+  "needs": [
+    {
+      "what": "Tomb Raider 1 game files (DATA, AUDIO, FMV folders)",
+      "hint": "Copy them into Roms/PORTS/Games/OpenLara/Tomb Raider 1.",
+      "check": [
+        "Roms/PORTS/Games/OpenLara/Tomb Raider 1/DATA"
+      ]
+    }
+  ]
+}

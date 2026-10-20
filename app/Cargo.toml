@@ -1,0 +1,24 @@
+[package]
+name = "portstore"
+version = "0.1.0"
+edition = "2021"
+description = "Install ports on the Miyoo Mini (Onion) from a catalog of their own releases"
+license = "MIT"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+flate2 = "1"
+crc32fast = "1"
+sha2 = "0.10"
+sha1 = "0.11"
+fontdue = "0.9"
+png = "0.17"
+libc = "0.2"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

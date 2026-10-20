@@ -1,0 +1,6 @@
+{
+  "id": "miniamp",
+  "catalog": "MiniAmp",
+  "github": "snyderman3000/miniamp",
+  "asset": "^MiniAmp-miyoo-v[\\d.]+\\.zip$"
+}

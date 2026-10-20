@@ -1,0 +1,38 @@
+{
+  "id": "n64-diddy-kong-racing",
+  "name": "Diddy Kong Racing",
+  "group": "Miyoo64 (N64)",
+  "github": "mr-finster/miyoo64",
+  "asset": "^DiddyKongRacing-miyoo\\.zip$",
+  "take": [
+    "App/DiddyKongRacing/",
+    "Roms/PORTS/"
+  ],
+  "keep": [
+    "App/DiddyKongRacing/rom.z64",
+    "App/DiddyKongRacing/data/"
+  ],
+  "needs": [
+    {
+      "what": "ROM: Diddy Kong Racing (USA), Rev 1 (version 1.1)",
+      "hint": "Put a .z64, .v64 or .n64 dump in Roms/N64 (any name) or as App/DiddyKongRacing/rom.z64.",
+      "sha1": "6d96743d46f8c0cd0edb0ec5600b003c89b93755",
+      "search": [
+        "Roms/N64",
+        "App/DiddyKongRacing"
+      ],
+      "n64": true,
+      "title": "Diddy Kong Racing"
+    }
+  ],
+  "categories": [
+    "racing"
+  ],
+  "status": "playable",
+  "assets": "owned",
+  "porter": [
+    "mr-finster"
+  ],
+  "about": "Native N64 port built from the Diddy Kong Racing decompilation. No emulation: runs on the Mini's CPU with a software renderer. Save states (9 slots + auto save). First start takes about a minute.",
+  "url": "https://github.com/mr-finster/miyoo64/tree/main/diddy-kong-racing"
+}

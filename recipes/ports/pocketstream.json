@@ -1,0 +1,6 @@
+{
+  "id": "pocketstream",
+  "catalog": "PocketStream",
+  "github": "IC-0n417/PocketStream",
+  "asset": "^PocketStream-OnionOS-[\\d.]+\\.zip$"
+}
