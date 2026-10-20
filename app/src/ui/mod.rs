@@ -36,6 +36,7 @@ const FOOT: i32 = 444;
 /// A port's row, and a group's heading above its ports.
 const ROW: i32 = 54;
 const HEADING: i32 = 30;
+const END: i32 = 12;
 /// The list's own space, and how many ports Left / Right move by.
 const AREA: i32 = FOOT - TOP - 6;
 const PAGE: usize = 6;
@@ -63,14 +64,21 @@ const TABS: [(Tab, &str); 5] = [
 #[derive(Clone, Debug, PartialEq)]
 enum Item {
     Heading(String),
+    /// The end of a group, before ports of none.
+    End,
     Port(usize),
     Manual(usize),
 }
 
 impl Item {
+    fn pickable(&self) -> bool {
+        matches!(self, Item::Port(_) | Item::Manual(_))
+    }
+
     fn height(&self) -> i32 {
         match self {
             Item::Heading(_) => HEADING,
+            Item::End => END,
             _ => ROW,
         }
     }
@@ -216,8 +224,14 @@ impl App {
         let mut out = Vec::new();
         let mut group = "";
         for (i, p) in shown {
-            if grouped && !p.group.is_empty() && p.group != group {
-                out.push(Item::Heading(p.group.clone()));
+            if grouped && p.group != group {
+                // A group's end, before ports of no group, is a line: they are not its.
+                if !group.is_empty() && p.group.is_empty() {
+                    out.push(Item::End);
+                }
+                if !p.group.is_empty() {
+                    out.push(Item::Heading(p.group.clone()));
+                }
             }
             group = if grouped { p.group.as_str() } else { "" };
             out.push(Item::Port(i));
@@ -248,7 +262,7 @@ impl App {
         let mut i = at as i64;
         for _ in 0..n {
             let wrapped = i.rem_euclid(n) as usize;
-            if !matches!(items[wrapped], Item::Heading(_)) {
+            if items[wrapped].pickable() {
                 return wrapped;
             }
             i += step;
@@ -311,7 +325,7 @@ impl App {
                     break;
                 }
                 at = next as usize;
-                while matches!(items[at], Item::Heading(_)) && at > 0 && at + 1 < n {
+                while !items[at].pickable() && at > 0 && at + 1 < n {
                     at = (at as i64 + by.signum()) as usize;
                 }
             }
@@ -341,7 +355,7 @@ impl App {
                     let id = self.index.ports[at].id.clone();
                     self.open(id);
                 }
-                Item::Heading(_) => {}
+                Item::Heading(_) | Item::End => {}
             },
             Key::B | Key::Start => return Flow::Exit,
             _ => {}
@@ -666,6 +680,7 @@ impl App {
             }
             last = at;
             match item {
+                Item::End => c.fill(20, y + END / 2, W as i32 - 48, 1, PICK),
                 Item::Heading(name) => {
                     c.text(20, y + 8, 15, ACCENT, name);
                     let w = c.width(15, name);
@@ -1010,7 +1025,7 @@ pub fn shots(store: Store, dir: &std::path::Path, ids: &[String]) -> Result<(), 
     }
     app.tab = Tab::Games;
     let items = app.items();
-    if let Some(at) = items.iter().position(|i| matches!(i, Item::Heading(_))) {
+    if let Some(at) = items.iter().rposition(|i| matches!(i, Item::Heading(_))) {
         app.pick[0] = at + 1;
         save(&mut app, "list-games-group")?;
     }
@@ -1072,6 +1087,7 @@ mod tests {
             .iter()
             .map(|i| match i {
                 Item::Heading(h) => format!("# {h}"),
+                Item::End => "---".into(),
                 Item::Port(p) => app.index.ports[*p].name.clone(),
                 Item::Manual(m) => app.index.manual[*m].name.clone(),
             })
@@ -1087,7 +1103,7 @@ mod tests {
             ("Mario Kart 64", "Miyoo64 (N64)", &["racing"]),
             ("Rewind", "", &["app"]),
         ]);
-        assert_eq!(names(&app), ["Blips", "# Miyoo64 (N64)", "Mario Kart 64", "Super Mario 64", "Zork"]);
+        assert_eq!(names(&app), ["Blips", "# Miyoo64 (N64)", "Mario Kart 64", "Super Mario 64", "---", "Zork"]);
         app.genre = Some("racing".into());
         assert_eq!(names(&app), ["# Miyoo64 (N64)", "Mario Kart 64"]);
         app.tab = Tab::Apps;
@@ -1097,11 +1113,14 @@ mod tests {
     #[test]
     fn headings_are_never_picked() {
         let mut app = app(&[("P", "G", &["x"]), ("Q", "G", &["x"]), ("Z", "", &["x"])]);
-        // # G, P, Q, Z
+        // # G, P, Q, ---, Z
         assert_eq!(App::pickable(&app.items(), 0, 1), 1);
         app.pick[0] = 1;
         app.key(Key::Up);
-        assert_eq!(app.pick[0], 3, "up from the first port wraps to the last");
+        assert_eq!(app.pick[0], 4, "up from the first port wraps to the last");
+        app.key(Key::Up);
+        assert_eq!(app.pick[0], 2, "over the group's end");
+        app.key(Key::Down);
         app.key(Key::Down);
         assert_eq!(app.pick[0], 1, "and down past the heading to the first");
     }
