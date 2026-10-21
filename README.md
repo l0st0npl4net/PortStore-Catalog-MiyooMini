@@ -86,7 +86,9 @@ Right change a setting, B closes it; settings are kept):
   rolling and flicker as screens change; while you use it, a slow band of light rolling down,
   a blinking cursor and a glitch now and then), **calm** (the light and the changes' flicker,
   nothing moving on its own) or **off**.
-- **Pictures:** in the screen's light (dithered in its shades) or in their own colours.
+- **Pictures:** in the screen's light (dithered in its shades), in their own colours, or
+  **off** (a letter in a box in the lists, a page's facts in the picture's place; nothing
+  downloaded for them).
 - **Development builds:** shown or hidden, as in the filter.
 
 ![Amber](docs/screenshots/amber.png) ![Classic](docs/screenshots/classic.png)

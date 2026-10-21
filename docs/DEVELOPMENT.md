@@ -224,7 +224,8 @@ title bar (the square, the title, something at the right), keys in brackets, but
 key in reverse. Themes: green (P1), amber (P3), ice, white (P4), red, and classic (DejaVu,
 Port Store 1.0's colours, no tube); `"theme": "custom"` with `"colors": {"fg": "#rrggbb",
 "bg": "#rrggbb"}` in `settings.json` makes one more. Pictures are dithered (Bayer 4×4) into
-five shades in blocks of 2 (lists) or 3 (pages), or shown in colour when chosen.
+five shades in blocks of 2 (lists) or 3 (pages), shown in colour, or not at all (a letter in
+a box; a page's sheet of facts takes the picture's place, and none is downloaded).
 
 - **List:** title bar (what is listed, how many, the time), tabs, the keys' column with the
   mode box, the list window (pick in a lighter band with a bar and a blinking cursor, tags
@@ -235,12 +236,12 @@ five shades in blocks of 2 (lists) or 3 (pages), or shown in colour when chosen.
 - **Windows:** `Confirm`, messages, a job's `EVENT LOG` (one line per kind of step, `T+mm:ss`,
   the line of the step running brightest, a progress bar of blocks, a spinner), `FILTER`
   (Select: all, categories with counts, the development builds), `SYSTEM` (L2: theme,
-  effects, pictures, development builds; Left/Right change, kept at once).
+  effects, pictures (screen, colour, off), development builds; Left/Right change, kept at once).
 - **Boot screen:** typed lines (card, catalog, installed, link, display) while the catalog
   downloads; any key skips it.
 
 Settings in `settings.json`, next to `index`: `theme`, `effects` (`full`, `calm`, `off`),
-`pictures` (`screen`, `color`), `dev` (true/false), `colors`. They are written through a
+`pictures` (`screen`, `color`, `off`), `dev` (true/false), `colors`. They are written through a
 temporary file; unknown or broken values fall back to the defaults.
 
 **The tube** (`Crt`, skipped for the classic look and `off`): each frame drawn goes through

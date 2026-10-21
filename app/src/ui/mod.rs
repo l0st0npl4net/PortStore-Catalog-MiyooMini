@@ -22,7 +22,7 @@ use canvas::Canvas;
 use crt::{Crt, Fx};
 use input::Key;
 use pictures::{Image, Pictures};
-use theme::{Effects, Look, Palette};
+use theme::{Effects, Look, Palette, PictureMode};
 
 /// The screen Port Store is laid out for at least: the Mini's. Larger ones (the
 /// Mini v4 and Flip, 752x560) get the same layout, wider and with more rows.
@@ -726,7 +726,10 @@ impl App {
                 let at = theme::EFFECTS.iter().position(|(e, ..)| *e == self.look.effects).unwrap_or(0);
                 self.look.effects = theme::EFFECTS[turn(theme::EFFECTS.len(), at)].0;
             }
-            2 => self.look.color_pictures = !self.look.color_pictures,
+            2 => {
+                let at = theme::PICTURES.iter().position(|(m, ..)| *m == self.look.pictures).unwrap_or(0);
+                self.look.pictures = theme::PICTURES[turn(theme::PICTURES.len(), at)].0;
+            }
             _ => self.look.dev = !self.look.dev,
         }
         self.save_look();
@@ -1460,7 +1463,11 @@ impl App {
             c.fill(x, y + 1, 3, ROW - 4, p.fg);
         }
         let (bx, by) = (x + 8, y + (ROW - 2 - THUMB) / 2);
-        match self.pictures.get(thumb) {
+        let shown = match self.look.pictures {
+            PictureMode::Off => None,
+            _ => self.pictures.get(thumb),
+        };
+        match shown {
             Some(img) => {
                 let (ix, iy) = (bx + (THUMB - img.w as i32) / 2, by + (THUMB - img.h as i32) / 2);
                 self.picture(c, p, ix, iy, &img, 2);
@@ -1502,7 +1509,7 @@ impl App {
     /// A picture in the screen's light (dithered in its shades, in blocks of `cell`),
     /// or in its own colours when so chosen or in the classic look.
     fn picture(&self, c: &mut Canvas, p: &Palette, x: i32, y: i32, img: &Image, cell: usize) {
-        if p.mono && !self.look.color_pictures {
+        if p.mono && self.look.pictures == PictureMode::Screen {
             c.image_dithered(x, y, img, cell, &p.ramp());
         } else {
             c.image(x, y, img);
@@ -1511,7 +1518,11 @@ impl App {
 
     /// A page's picture: its window, with a ruler on two sides and cross hairs, as
     /// an instrument shows it; "no signal" without one.
+    /// Its width and height: none when pictures are off.
     fn draw_cover(&mut self, c: &mut Canvas, p: &Palette, x: i32, y: i32, cover: &str) -> (i32, i32) {
+        if self.look.pictures == PictureMode::Off {
+            return (-12, 0);
+        }
         let (pw, ph) = (224, 168);
         let ruler = 36;
         let (fx, fy) = (x + ruler, y);
@@ -1863,7 +1874,7 @@ impl App {
         let values = [
             self.look.theme_name().to_string(),
             self.look.effects_name().to_string(),
-            if self.look.color_pictures { "IN COLOR" } else { "SCREEN" }.to_string(),
+            self.look.pictures_name().to_string(),
             if self.look.dev { "SHOWN" } else { "HIDDEN" }.to_string(),
         ];
         let mut ty = y + BAR + 8;
@@ -2344,6 +2355,25 @@ mod tests {
         assert_eq!(Look::load(&app.store.card.home).theme, "classic");
         app.key(Key::B);
         assert!(matches!(app.view, View::List));
+    }
+
+    #[test]
+    fn pictures_can_be_turned_off() {
+        let mut app = app(&[("A", "", &["x"])]);
+        app.key(Key::L2);
+        app.key(Key::Down);
+        app.key(Key::Down);
+        let mut seen = Vec::new();
+        for _ in 0..3 {
+            app.key(Key::Right);
+            seen.push(app.look.pictures);
+        }
+        assert_eq!(seen, [PictureMode::Color, PictureMode::Off, PictureMode::Screen]);
+        app.key(Key::Left);
+        assert_eq!(Look::load(&app.store.card.home).pictures, PictureMode::Off);
+        // A page without its picture still draws, its facts where the picture was.
+        app.view = View::Details { id: "a".into(), scroll: 0 };
+        app.draw(&mut Canvas::new(W, H));
     }
 
     #[test]

@@ -106,6 +106,24 @@ pub enum Effects {
 pub const EFFECTS: [(Effects, &str, &str); 3] =
     [(Effects::Full, "full", "FULL"), (Effects::Calm, "calm", "CALM"), (Effects::Off, "off", "OFF")];
 
+/// How ports' pictures are shown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PictureMode {
+    /// In the screen's light: dithered in its shades.
+    Screen,
+    /// In their own colours.
+    Color,
+    /// None: a letter in a box in the lists, the page without its picture (and
+    /// nothing downloaded for them).
+    Off,
+}
+
+pub const PICTURES: [(PictureMode, &str, &str); 3] = [
+    (PictureMode::Screen, "screen", "SCREEN"),
+    (PictureMode::Color, "color", "IN COLOR"),
+    (PictureMode::Off, "off", "OFF"),
+];
+
 /// The choices of how it looks, as kept in settings.json.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Look {
@@ -113,15 +131,14 @@ pub struct Look {
     /// Colours of the "custom" theme: (phosphor, background).
     pub custom: Option<(u32, u32)>,
     pub effects: Effects,
-    /// Pictures in their own colours rather than in the screen's light.
-    pub color_pictures: bool,
+    pub pictures: PictureMode,
     /// Development builds (of catalogs that publish them) in the lists.
     pub dev: bool,
 }
 
 impl Default for Look {
     fn default() -> Look {
-        Look { theme: "green".into(), custom: None, effects: Effects::Full, color_pictures: false, dev: false }
+        Look { theme: "green".into(), custom: None, effects: Effects::Full, pictures: PictureMode::Screen, dev: false }
     }
 }
 
@@ -137,6 +154,10 @@ impl Look {
 
     pub fn theme_name(&self) -> &'static str {
         THEMES.iter().find(|(id, _)| *id == self.theme).map_or("CUSTOM", |(_, name)| name)
+    }
+
+    pub fn pictures_name(&self) -> &'static str {
+        PICTURES.iter().find(|(m, ..)| *m == self.pictures).map_or("SCREEN", |(.., name)| name)
     }
 
     pub fn effects_name(&self) -> &'static str {
@@ -171,7 +192,9 @@ impl Look {
         if let Some(e) = text("effects") {
             look.effects = EFFECTS.iter().find(|(_, id, _)| *id == e).map_or(look.effects, |(e, ..)| *e);
         }
-        look.color_pictures = text("pictures").as_deref() == Some("color");
+        if let Some(m) = text("pictures") {
+            look.pictures = PICTURES.iter().find(|(_, id, _)| *id == m).map_or(look.pictures, |(m, ..)| *m);
+        }
         look.dev = json.get("dev").and_then(|v| v.as_bool()).unwrap_or(false);
         look
     }
@@ -186,7 +209,7 @@ impl Look {
             .unwrap_or_default();
         json.insert("theme".into(), self.theme.clone().into());
         json.insert("effects".into(), EFFECTS.iter().find(|(e, ..)| *e == self.effects).map_or("full", |(_, id, _)| id).into());
-        json.insert("pictures".into(), if self.color_pictures { "color" } else { "screen" }.into());
+        json.insert("pictures".into(), PICTURES.iter().find(|(m, ..)| *m == self.pictures).map_or("screen", |(_, id, _)| id).into());
         json.insert("dev".into(), self.dev.into());
         let text = serde_json::to_string_pretty(&json).map_err(std::io::Error::other)? + "\n";
         let tmp: PathBuf = home.join("settings.json.new");
@@ -208,7 +231,7 @@ mod tests {
         assert_eq!(look, Look { custom: Some((0xff00ff, 0x000010)), ..Look::default() });
         look.theme = "custom".into();
         look.effects = Effects::Calm;
-        look.color_pictures = true;
+        look.pictures = PictureMode::Off;
         look.dev = true;
         look.save(&dir).unwrap();
         let json: serde_json::Value = serde_json::from_str(&fs::read_to_string(dir.join("settings.json")).unwrap()).unwrap();
