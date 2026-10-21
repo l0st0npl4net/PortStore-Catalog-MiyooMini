@@ -14,6 +14,7 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::homebrew::{self, Homebrew};
 use crate::index::{Index, Port};
 use crate::install::{free_bytes, Step};
 use crate::needs::{self, Have, Roms};
@@ -64,14 +65,16 @@ const AWAKE: Duration = Duration::from_secs(40);
 pub enum Tab {
     Games,
     Apps,
+    Homebrew,
     Installed,
     Updates,
     More,
 }
 
-const TABS: [(Tab, &str); 5] = [
+const TABS: [(Tab, &str); 6] = [
     (Tab::Games, "GAMES"),
     (Tab::Apps, "APPS"),
+    (Tab::Homebrew, "HOMEBREW"),
     (Tab::Installed, "INSTALLED"),
     (Tab::Updates, "UPDATES"),
     (Tab::More, "MORE"),
@@ -86,11 +89,13 @@ enum Item {
     End,
     Port(usize),
     Manual(usize),
+    /// A homebrew entry, by its place in the list.
+    Brew(usize),
 }
 
 impl Item {
     fn pickable(&self) -> bool {
-        matches!(self, Item::Port(_) | Item::Manual(_))
+        matches!(self, Item::Port(_) | Item::Manual(_) | Item::Brew(_))
     }
 
     fn height(&self) -> i32 {
@@ -107,19 +112,19 @@ impl Item {
 enum Choice {
     All(usize),
     Category(String, usize),
-    /// The line before the channels.
-    Line,
+    /// A line with a heading (the channels, the kinds of homebrew).
+    Line(&'static str),
     Dev(usize),
 }
 
 impl Choice {
     fn pickable(&self) -> bool {
-        !matches!(self, Choice::Line)
+        !matches!(self, Choice::Line(_))
     }
 }
 
 /// The rows of the system's window.
-const SYSTEM: [&str; 4] = ["THEME", "EFFECTS", "PICTURES", "DEV BUILDS"];
+const SYSTEM: [&str; 5] = ["THEME", "EFFECTS", "PICTURES", "DEV BUILDS", "PORT STORE IN GAMES"];
 
 #[derive(Clone, Debug)]
 enum Action {
@@ -130,6 +135,10 @@ enum Action {
     InstallMany(Vec<String>),
     Remove(String),
     Refresh,
+    /// A homebrew entry, by slug.
+    InstallBrew(String),
+    RemoveBrew(String),
+    RefreshBrew,
 }
 
 #[derive(Clone, Debug)]
@@ -143,8 +152,13 @@ enum View {
     Message { title: String, text: String },
     /// Select's window over the list: a category, the development builds.
     Filter { at: usize },
-    /// L2's window: the theme, the tube's effects, pictures, development builds.
+    /// L2's window: the theme, the tube's effects, pictures, development builds,
+    /// Port Store in Games.
     System { at: usize },
+    /// A homebrew entry's page.
+    Brew { slug: String, scroll: usize },
+    /// The ports new in the catalog since the last look.
+    Arrivals { at: usize },
 }
 
 impl View {
@@ -157,6 +171,8 @@ impl View {
             View::Message { .. } => 3,
             View::Filter { .. } => 4,
             View::System { .. } => 5,
+            View::Arrivals { .. } => 6,
+            View::Brew { .. } => 0,
         }
     }
 
@@ -164,6 +180,7 @@ impl View {
         match self {
             View::Details { .. } => 1,
             View::Manual { .. } => 2,
+            View::Brew { .. } => 3,
             _ => 0,
         }
     }
@@ -180,6 +197,8 @@ enum Msg {
     Quiet(Result<Index, String>),
     /// The port a queue of installs is on: (place, of how many, name).
     Queue(usize, usize, String),
+    /// The homebrew list downloaded (quietly when asked for by the tab).
+    Homebrew(Result<Homebrew, String>, bool),
 }
 
 /// A job done.
@@ -190,6 +209,8 @@ enum Finished {
     /// A queue: those installed, those not (with why).
     Many(Vec<String>, Vec<(String, String)>),
     Removed,
+    BrewInstalled(String),
+    BrewRemoved,
 }
 
 #[derive(PartialEq, Eq)]
@@ -237,10 +258,21 @@ pub struct App {
     free: Option<u64>,
     tab: Tab,
     /// Per tab: ports of one category only (Games and Apps; Select's window).
-    filter: [Option<String>; 5],
+    filter: [Option<String>; 6],
     /// Per tab: the row picked and the first row on show, by place in `items()`.
-    pick: [usize; 5],
-    top: [usize; 5],
+    pick: [usize; 6],
+    top: [usize; 6],
+    /// Homebrew Hub's list, the state of each entry, and whether it is being
+    /// downloaded (asked for once a session, when the tab is first shown).
+    brews: Homebrew,
+    brew_states: HashMap<String, State>,
+    brews_loading: bool,
+    brews_asked: bool,
+    /// Ports new in the catalog, to announce; and the day each port was first seen.
+    arrivals: Vec<String>,
+    seen: HashMap<String, String>,
+    /// Port Store's own entry in Games → MiyooPorts.
+    in_games: bool,
     pictures: Pictures,
     /// Ports marked (X) for installing together (Start).
     marked: std::collections::BTreeSet<String>,
@@ -310,8 +342,15 @@ impl App {
             offer_pending: false,
             needs_gen: HashMap::new(),
             scroll_max: 0,
-            pick: [0; 5],
-            top: [0; 5],
+            pick: [0; 6],
+            top: [0; 6],
+            brews: Homebrew::default(),
+            brew_states: HashMap::new(),
+            brews_loading: false,
+            brews_asked: false,
+            arrivals: Vec::new(),
+            seen: HashMap::new(),
+            in_games: false,
             view: View::List,
             under: Vec::new(),
             jobs: channel(),
@@ -328,8 +367,28 @@ impl App {
             log: Vec::new(),
             log_at: now,
         };
+        app.brews = app.store.load_homebrew();
+        app.in_games = crate::miyooports::self_entry(&app.store.card.root);
+        app.look_for_arrivals();
         app.recount();
         app
+    }
+
+    /// Ports new in the catalog on show since the last look, added to those to
+    /// announce.
+    fn look_for_arrivals(&mut self) {
+        let (new, seen) = self.store.arrivals(&self.index);
+        self.seen = seen;
+        for id in new {
+            if !self.arrivals.contains(&id) {
+                self.arrivals.push(id);
+            }
+        }
+    }
+
+    /// Whether a port came into the catalog in the last 14 days (on this card).
+    fn is_new(&self, id: &str) -> bool {
+        self.seen.get(id).is_some_and(|d| !d.is_empty() && *d >= crate::days_ago(14))
     }
 
     fn recount(&mut self) {
@@ -342,7 +401,36 @@ impl App {
         self.free = free_bytes(&self.store.card.root);
         let updates = self.states.values().filter(|s| matches!(s, State::Update(_))).count();
         self.store.note_updates(updates);
+        let records = self.store.homebrew_records();
+        self.brew_states = self
+            .brews
+            .entries
+            .iter()
+            .map(|e| (e.slug.clone(), homebrew::state_of(records.get(&e.slug), e)))
+            .collect();
         self.dirty = true;
+    }
+
+    fn brew_state(&self, slug: &str) -> State {
+        self.brew_states.get(slug).cloned().unwrap_or(State::Absent)
+    }
+
+    /// The Homebrew tab shown: its list downloaded once a session, unless the one at
+    /// hand is today's.
+    fn tab_shown(&mut self) {
+        if self.tab != Tab::Homebrew || self.brews_asked || self.store.homebrew_url().is_none() {
+            return;
+        }
+        self.brews_asked = true;
+        if self.brews.generated.get(..10) == Some(crate::today().as_str()) {
+            return;
+        }
+        self.brews_loading = true;
+        let store = self.store.clone();
+        let tx = self.jobs.0.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(Msg::Homebrew(store.refresh_homebrew(&AtomicBool::new(false)), true));
+        });
     }
 
     fn state(&self, id: &str) -> State {
@@ -392,11 +480,14 @@ impl App {
                 .filter(|(_, p)| matches!(self.state(&p.id), State::Update(_)))
                 .collect(),
             Tab::More => return (0..self.index.manual.len()).map(Item::Manual).collect(),
+            Tab::Homebrew => return self.brew_items(),
         };
         let grouped = matches!(self.tab, Tab::Games | Tab::Apps) && !self.newest;
         if self.newest {
             shown.sort_by(|(_, a), (_, b)| b.date.cmp(&a.date).then(a.name.to_lowercase().cmp(&b.name.to_lowercase())));
-            return shown.into_iter().map(|(i, _)| Item::Port(i)).collect();
+            let mut out = shown.into_iter().map(|(i, _)| Item::Port(i)).collect();
+            self.installed_brews(&mut out);
+            return out;
         }
         let key = |p: &Port| match grouped && !p.group.is_empty() {
             true => (p.group.to_lowercase(), p.name.to_lowercase()),
@@ -418,12 +509,64 @@ impl App {
             group = if grouped { p.group.as_str() } else { "" };
             out.push(Item::Port(i));
         }
+        self.installed_brews(&mut out);
         out
+    }
+
+    /// In the Installed tab: homebrew installed with Port Store, after the ports,
+    /// under a heading.
+    fn installed_brews(&self, out: &mut Vec<Item>) {
+        if self.tab == Tab::Installed {
+            let mut brews: Vec<usize> = (0..self.brews.entries.len())
+                .filter(|&i| matches!(self.brew_state(&self.brews.entries[i].slug), State::Installed(_) | State::Update(_)))
+                .collect();
+            brews.sort_by_key(|&i| self.brews.entries[i].title.to_lowercase());
+            if !brews.is_empty() {
+                out.push(Item::Heading("Homebrew".into()));
+                out.extend(brews.into_iter().map(Item::Brew));
+            }
+        }
+    }
+
+    /// The Homebrew tab's rows: of the system or kind chosen, A to Z or newest in
+    /// Homebrew Hub first.
+    fn brew_items(&self) -> Vec<Item> {
+        let filter = self.filter[self.tab_at()].as_deref();
+        let mut shown: Vec<(usize, &homebrew::Entry)> = self
+            .brews
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| filter.is_none_or(|f| e.system == f || e.kind == f))
+            .collect();
+        match self.newest {
+            true => shown.sort_by_cached_key(|(_, e)| (std::cmp::Reverse(e.added.clone()), e.title.to_lowercase())),
+            false => shown.sort_by_cached_key(|(_, e)| e.title.to_lowercase()),
+        }
+        shown.into_iter().map(|(i, _)| Item::Brew(i)).collect()
     }
 
     /// Select's window for the tab: all, each category with how many it has, and the
     /// development builds when the catalog has any for it.
     fn choices(&self) -> Vec<Choice> {
+        if self.tab == Tab::Homebrew {
+            let count = |f: &dyn Fn(&homebrew::Entry) -> bool| self.brews.entries.iter().filter(|e| f(e)).count();
+            let mut out = vec![Choice::All(self.brews.entries.len())];
+            for sys in ["GBA", "GBC", "GB", "NES"] {
+                let n = count(&|e| e.system == sys);
+                if n > 0 {
+                    out.push(Choice::Category(sys.into(), n));
+                }
+            }
+            out.push(Choice::Line("KIND"));
+            for kind in ["game", "demo", "tool", "music"] {
+                let n = count(&|e| e.kind == kind);
+                if n > 0 {
+                    out.push(Choice::Category(kind.into(), n));
+                }
+            }
+            return out;
+        }
         let dev_count = self.index.ports.iter().filter(|p| p.dev && p.is_app() == (self.tab == Tab::Apps)).count();
         let shown: Vec<&Port> = self.of_tab(self.tab).map(|(_, p)| p).collect();
         let mut counts: std::collections::BTreeMap<&str, usize> = Default::default();
@@ -435,7 +578,7 @@ impl App {
         let mut out = vec![Choice::All(shown.len())];
         out.extend(counts.into_iter().map(|(c, n)| Choice::Category(c.to_string(), n)));
         if dev_count > 0 {
-            out.push(Choice::Line);
+            out.push(Choice::Line("CHANNEL"));
             out.push(Choice::Dev(dev_count));
         }
         out
@@ -567,8 +710,61 @@ impl App {
             }
             View::Filter { at } => self.filter_key(key, at),
             View::System { at } => self.system_key(key, at),
+            View::Brew { slug, scroll } => self.brew_key(key, slug, scroll),
+            View::Arrivals { at } => match key {
+                Key::Up => self.view = View::Arrivals { at: at.saturating_sub(1) },
+                Key::Down => self.view = View::Arrivals { at: (at + 1).min(self.arrivals.len().saturating_sub(1)) },
+                Key::A => {
+                    let id = self.arrivals.get(at).cloned();
+                    self.arrivals.clear();
+                    self.view = View::List;
+                    if let Some(id) = id.filter(|id| self.port(id).is_some()) {
+                        self.open(id);
+                    }
+                }
+                Key::B => {
+                    self.arrivals.clear();
+                    self.view = View::List;
+                }
+                _ => {}
+            },
         }
         Flow::Stay
+    }
+
+    fn brew_key(&mut self, key: Key, slug: String, scroll: usize) {
+        let Some(e) = self.brews.entry(&slug).cloned() else {
+            self.view = View::List;
+            return;
+        };
+        let state = self.brew_state(&slug);
+        match key {
+            Key::B => self.view = View::List,
+            Key::Up => self.view = View::Brew { slug, scroll: scroll.saturating_sub(1) },
+            Key::Down => self.view = View::Brew { slug, scroll: (scroll + 1).min(self.scroll_max) },
+            Key::A => {
+                let verb = match state {
+                    State::Installed(_) => "Reinstall",
+                    State::Update(_) => "Update",
+                    _ => "Install",
+                };
+                let text = format!(
+                    "{verb} {} ({})? It downloads {} into Roms/{}.",
+                    e.title,
+                    e.system_name(),
+                    size(e.file.size),
+                    e.folder()
+                );
+                self.under.push(self.view.clone());
+                self.view = View::Confirm { text, yes: Action::InstallBrew(slug) };
+            }
+            Key::X if matches!(state, State::Installed(_) | State::Update(_)) => {
+                let text = format!("Remove {} from Roms/{}? Its saves stay.", e.title, e.folder());
+                self.under.push(self.view.clone());
+                self.view = View::Confirm { text, yes: Action::RemoveBrew(slug) };
+            }
+            _ => {}
+        }
     }
 
     fn back(&mut self) {
@@ -600,9 +796,15 @@ impl App {
             Key::Down if n > 0 => self.pick[t] = App::pickable(&items, (pick + 1) % n, 1),
             Key::Left if n > 0 => self.pick[t] = page(-1),
             Key::Right if n > 0 => self.pick[t] = page(1),
-            Key::L1 => self.tab = TABS[(t + TABS.len() - 1) % TABS.len()].0,
-            Key::R1 => self.tab = TABS[(t + 1) % TABS.len()].0,
-            Key::Select if matches!(self.tab, Tab::Games | Tab::Apps) => {
+            Key::L1 => {
+                self.tab = TABS[(t + TABS.len() - 1) % TABS.len()].0;
+                self.tab_shown();
+            }
+            Key::R1 => {
+                self.tab = TABS[(t + 1) % TABS.len()].0;
+                self.tab_shown();
+            }
+            Key::Select if matches!(self.tab, Tab::Games | Tab::Apps | Tab::Homebrew) => {
                 // The window opens on the filter in force.
                 let choices = self.choices();
                 let at = match &self.filter[t] {
@@ -612,6 +814,7 @@ impl App {
                 self.view = View::Filter { at: at.unwrap_or(0) };
             }
             Key::L2 => self.view = View::System { at: 0 },
+            Key::Y if self.tab == Tab::Homebrew => self.start(Action::RefreshBrew),
             Key::Y => self.start(Action::Refresh),
             Key::R2 if self.tab != Tab::More => {
                 self.newest = !self.newest;
@@ -651,6 +854,7 @@ impl App {
             }
             Key::A if n > 0 => match items[pick].clone() {
                 Item::Manual(at) => self.view = View::Manual { at, scroll: 0 },
+                Item::Brew(at) => self.view = View::Brew { slug: self.brews.entries[at].slug.clone(), scroll: 0 },
                 Item::Port(at) => {
                     let id = self.index.ports[at].id.clone();
                     self.open(id);
@@ -730,7 +934,19 @@ impl App {
                 let at = theme::PICTURES.iter().position(|(m, ..)| *m == self.look.pictures).unwrap_or(0);
                 self.look.pictures = theme::PICTURES[turn(theme::PICTURES.len(), at)].0;
             }
-            _ => self.look.dev = !self.look.dev,
+            3 => self.look.dev = !self.look.dev,
+            _ => {
+                // Not a look: Port Store's entry in MiyooPorts is put on the card or
+                // taken off it at once.
+                match crate::miyooports::set_self_entry(&self.store.card.root, !self.in_games) {
+                    Ok(()) => self.in_games = !self.in_games,
+                    Err(e) => {
+                        self.view = View::List;
+                        self.message("Not changed", &e.to_string());
+                    }
+                }
+                return;
+            }
         }
         self.save_look();
     }
@@ -850,7 +1066,11 @@ impl App {
         let tx = self.jobs.0.clone();
         let cancel = self.cancel.clone();
         let name = |id: &str| self.port(id).map_or(id.to_string(), |p| p.name.clone());
+        let brew_name = |slug: &str| self.brews.entry(slug).map_or(slug.to_string(), |e| e.title.clone());
         let (title, first) = match &action {
+            Action::InstallBrew(slug) => (format!("Installing {}", brew_name(slug)), "LINK OPEN".to_string()),
+            Action::RemoveBrew(slug) => (format!("Removing {}", brew_name(slug)), "REMOVE FILES".to_string()),
+            Action::RefreshBrew => ("Downloading the homebrew list".to_string(), "FETCH HOMEBREW.JSON".to_string()),
             Action::Install(id) => (format!("Installing {}", name(id)), "LINK OPEN".to_string()),
             Action::Remove(id) => (format!("Removing {}", name(id)), "REMOVE FILES".to_string()),
             Action::Refresh => ("Downloading the catalog".to_string(), "FETCH INDEX.JSON".to_string()),
@@ -861,14 +1081,21 @@ impl App {
             self.view = self.under.pop().unwrap_or(View::List);
         }
         self.under.push(self.view.clone());
-        let stoppable = matches!(action, Action::Install(_) | Action::InstallMany(_) | Action::Refresh);
+        let stoppable = matches!(
+            action,
+            Action::Install(_) | Action::InstallMany(_) | Action::Refresh | Action::InstallBrew(_) | Action::RefreshBrew
+        );
         self.view = View::Busy { title, step: None, stoppable };
         self.log.clear();
         self.log_at = self.now;
         self.note(0, first);
         let port = match &action {
             Action::Install(id) | Action::Remove(id) => self.port(id).cloned(),
-            Action::Refresh | Action::InstallMany(_) | Action::Place(_) => None,
+            _ => None,
+        };
+        let brew = match &action {
+            Action::InstallBrew(slug) => self.brews.entry(slug).cloned(),
+            _ => None,
         };
         let placements: Vec<needs::Placement> = match &action {
             Action::Place(id) => self.imports.get(id).into_iter().flatten().flatten().cloned().collect(),
@@ -886,7 +1113,7 @@ impl App {
         std::thread::spawn(move || {
             // A job that panics still ends: the screen is never left busy for good.
             let ended = tx.clone();
-            let job = std::panic::AssertUnwindSafe(move || job(store, tx, cancel, action, port, placements, queue));
+            let job = std::panic::AssertUnwindSafe(move || job(store, tx, cancel, action, port, brew, placements, queue));
             if std::panic::catch_unwind(job).is_err() {
                 let _ = ended.send(Msg::Done(Err("Port Store ran into an error it did not expect: see cache/portstore.log".into())));
             }
@@ -912,6 +1139,7 @@ fn job(
     cancel: Arc<AtomicBool>,
     action: Action,
     port: Option<Port>,
+    brew: Option<homebrew::Entry>,
     placements: Vec<needs::Placement>,
     queue: Vec<Port>,
 ) {
@@ -920,6 +1148,19 @@ fn job(
             let _ = tx.send(Msg::Index(store.refresh(&cancel)));
             return;
         }
+        Action::RefreshBrew => {
+            let _ = tx.send(Msg::Homebrew(store.refresh_homebrew(&cancel), false));
+            return;
+        }
+        Action::InstallBrew(slug) => match brew {
+            Some(e) => store
+                .install_homebrew(&e, &cancel, &mut |step| {
+                    let _ = tx.send(Msg::Step(step));
+                })
+                .map(|_| Finished::BrewInstalled(slug)),
+            None => Err(std::io::Error::other(format!("{slug} is not in the homebrew list"))),
+        },
+        Action::RemoveBrew(slug) => store.remove_homebrew(&slug).map(|_| Finished::BrewRemoved),
         Action::Install(id) => match port {
             Some(port) => store
                 .install(&port, &cancel, &mut |step| {
@@ -964,6 +1205,15 @@ impl App {
             self.offer_self_update();
             self.dirty = true;
         }
+        // New ports, once the list is on screen and nothing else is offered.
+        let quiet = matches!(self.view, View::List) && !self.busy && !self.booting() && !self.offer_pending;
+        if quiet && !self.arrivals.is_empty() && !self.still {
+            self.arrivals.retain(|id| self.index.port(id).is_some());
+            if !self.arrivals.is_empty() {
+                self.view = View::Arrivals { at: 0 };
+                self.dirty = true;
+            }
+        }
         while let Ok(msg) = self.jobs.1.try_recv() {
             self.dirty = true;
             match msg {
@@ -1000,6 +1250,25 @@ impl App {
                         self.needs.insert(id, have);
                     }
                 }
+                Msg::Homebrew(result, quiet) => {
+                    self.brews_loading = false;
+                    if !quiet {
+                        self.busy = false;
+                        self.back();
+                    }
+                    match result {
+                        Ok(list) => {
+                            self.brews = list;
+                            self.recount();
+                            if !quiet {
+                                let n = self.brews.entries.len();
+                                self.message("Homebrew", &format!("{n} entries from Homebrew Hub."));
+                            }
+                        }
+                        Err(e) if !quiet => self.message("Homebrew list not downloaded", &e),
+                        Err(e) => eprintln!("portstore: homebrew list: {e}"),
+                    }
+                }
                 Msg::Index(result) => {
                     self.busy = false;
                     self.back();
@@ -1010,6 +1279,7 @@ impl App {
                             self.online = true;
                             self.store.repair(&index);
                             self.index = index;
+                            self.look_for_arrivals();
                             self.recount();
                             let n = self.index.ports.len();
                             self.message("Catalog", &format!("{n} ports in the catalog of {}.", self.index_date()));
@@ -1037,6 +1307,17 @@ impl App {
                             self.view = View::List;
                             self.message("Removed", "The port is off the card.");
                         }
+                        Ok(Finished::BrewInstalled(slug)) => {
+                            let (title, system, folder) = self
+                                .brews
+                                .entry(&slug)
+                                .map_or((slug.clone(), "", ""), |e| (e.title.clone(), e.system_name(), e.folder()));
+                            self.message("Installed", &format!("{title} is in Games → {system} (Roms/{folder})."));
+                        }
+                        Ok(Finished::BrewRemoved) => {
+                            self.view = View::List;
+                            self.message("Removed", "The ROM and its box art are off the card; saves stay.");
+                        }
                         Err(e) if e == "cancelled" => {}
                         Err(e) => self.message("Something went wrong", &e),
                     }
@@ -1051,6 +1332,7 @@ impl App {
         self.online = true;
         self.store.repair(&index);
         self.index = index;
+        self.look_for_arrivals();
         self.recount();
         self.offer_pending = true;
     }
@@ -1195,6 +1477,12 @@ impl App {
                 c.shade(0, 0, c.w as i32, c.h as i32, p.bg, 150);
                 self.draw_system(c, &p, at);
             }
+            View::Brew { slug, scroll } => self.draw_brew(c, &p, &slug, scroll),
+            View::Arrivals { at } => {
+                self.draw_list(c, &p);
+                c.shade(0, 0, c.w as i32, c.h as i32, p.bg, 150);
+                self.draw_arrivals(c, &p, at);
+            }
         }
     }
 
@@ -1337,6 +1625,10 @@ impl App {
                 Tab::Apps => "NO APPS IN THE CATALOG.",
                 Tab::Games if filter.is_some() => "NO GAMES OF THIS KIND.",
                 Tab::Games => "THE CATALOG IS EMPTY: PRESS Y TO DOWNLOAD IT.",
+                Tab::Homebrew if self.brews_loading => "DOWNLOADING HOMEBREW HUB'S LIST...",
+                Tab::Homebrew if filter.is_some() => "NOTHING OF THIS KIND.",
+                Tab::Homebrew if self.store.homebrew_url().is_none() => "NO CATALOG ADDRESS IN SETTINGS.JSON.",
+                Tab::Homebrew => "NO LIST YET: PRESS Y TO DOWNLOAD IT.",
             };
             let tw = c.width(SMALL, text);
             c.text(wx + (ww - tw) / 2, area_top + area / 2 - 10, SMALL, p.dim, text);
@@ -1382,6 +1674,33 @@ impl App {
                     if port.dev {
                         sx += inverse(c, p, sx, y + 32, "DEV", p.dim) + 8;
                     }
+                    if port.auto {
+                        sx += inverse(c, p, sx, y + 32, "AUTO", p.dim) + 8;
+                    }
+                    if self.is_new(&port.id) {
+                        sx += inverse(c, p, sx, y + 32, "NEW", p.hi) + 8;
+                    }
+                    c.text_fit(sx, y + 32, SMALL, p.dim, &sub, rx + rw - 16 - tag_w - sx);
+                }
+                Item::Brew(i) => {
+                    let e = self.brews.entries[*i].clone();
+                    self.row(c, p, rx, y, rw, at == pick, &e.title, &e.shot, false);
+                    let sub = join(&[
+                        if self.newest { e.added.clone() } else { String::new() },
+                        e.system.clone(),
+                        e.kind.clone(),
+                        e.devs.join(", "),
+                    ])
+                    .to_uppercase();
+                    let tag_w = match self.brew_state(&e.slug) {
+                        State::Installed(_) => c.text_right(rx + rw - 8, y + 32, SMALL, p.good, "[INSTALLED]"),
+                        State::Update(_) => {
+                            let tw = c.width(SMALL, "UPDATE") + 8;
+                            inverse(c, p, rx + rw - 8 - tw, y + 32, "UPDATE", p.warn)
+                        }
+                        _ => c.text_right(rx + rw - 8, y + 32, SMALL, p.dim, &size(e.file.size)),
+                    };
+                    let sx = rx + THUMB + 14;
                     c.text_fit(sx, y + 32, SMALL, p.dim, &sub, rx + rw - 16 - tag_w - sx);
                 }
             }
@@ -1393,6 +1712,11 @@ impl App {
         let fy = App::foot(c);
         c.fill(EDGE, fy, w - 2 * EDGE, 2, p.dim);
         let left = match self.marked.len() {
+            0 if self.tab == Tab::Homebrew => format!(
+                "HOMEBREW HUB \\\\ {} ENTRIES \\\\ LIST {}",
+                self.brews.entries.len(),
+                self.brews.generated.get(..10).unwrap_or("NONE YET")
+            ),
             0 => format!(
                 "CATALOG {} \\\\ {} \\\\ LINK {}",
                 self.index_date(),
@@ -1413,14 +1737,14 @@ impl App {
         if !items.is_empty() {
             keys.push(("A", "OPEN".into()));
         }
-        if !matches!(self.tab, Tab::More) && !items.is_empty() {
+        if !matches!(self.tab, Tab::More | Tab::Homebrew) && !items.is_empty() {
             keys.push(("X", "MARK".into()));
         }
         if !self.marked.is_empty() {
             keys.push(("ST", "INSTALL".into()));
         }
         match self.tab {
-            Tab::Games | Tab::Apps => keys.push(("SEL", "FILTER".into())),
+            Tab::Games | Tab::Apps | Tab::Homebrew => keys.push(("SEL", "FILTER".into())),
             Tab::Updates if !items.is_empty() => keys.push(("SEL", "UPD ALL".into())),
             _ => {}
         }
@@ -1465,7 +1789,7 @@ impl App {
         let (bx, by) = (x + 8, y + (ROW - 2 - THUMB) / 2);
         let shown = match self.look.pictures {
             PictureMode::Off => None,
-            _ => self.pictures.get(thumb),
+            _ => self.pictures.get_fit(thumb, THUMB as usize, THUMB as usize),
         };
         match shown {
             Some(img) => {
@@ -1519,7 +1843,7 @@ impl App {
     /// A page's picture: its window, with a ruler on two sides and cross hairs, as
     /// an instrument shows it; "no signal" without one.
     /// Its width and height: none when pictures are off.
-    fn draw_cover(&mut self, c: &mut Canvas, p: &Palette, x: i32, y: i32, cover: &str) -> (i32, i32) {
+    fn draw_cover(&mut self, c: &mut Canvas, p: &Palette, x: i32, y: i32, cover: &str, cell: usize) -> (i32, i32) {
         if self.look.pictures == PictureMode::Off {
             return (-12, 0);
         }
@@ -1527,10 +1851,10 @@ impl App {
         let ruler = 36;
         let (fx, fy) = (x + ruler, y);
         c.frame(fx - 2, fy - 2, pw + 4, ph + 4, 1, p.dim);
-        match self.pictures.get(cover) {
+        match self.pictures.get_fit(cover, pw as usize, ph as usize) {
             Some(img) => {
                 let (ix, iy) = (fx + (pw - img.w as i32) / 2, fy + (ph - img.h as i32) / 2);
-                self.picture(c, p, ix, iy, &img, 3);
+                self.picture(c, p, ix, iy, &img, cell);
             }
             None => {
                 // Static, as a screen without a signal.
@@ -1627,7 +1951,7 @@ impl App {
         let facts = c.fit(SMALL, &format!("GROUP: {}", facts.replace(" · ", " \\\\ ")), w - 2 * EDGE - 24);
         c.text(EDGE + 12, EDGE + BAR + 4, SMALL, p.dim, &facts);
 
-        let (cw, ch) = self.draw_cover(c, p, EDGE + 6, TOP, &port.cover);
+        let (cw, ch) = self.draw_cover(c, p, EDGE + 6, TOP, &port.cover, 3);
         let sx = EDGE + 6 + cw + 18;
         let mut rows = vec![
             ("VERSION", port.version.clone()),
@@ -1645,6 +1969,12 @@ impl App {
         }
         if port.owned() {
             rows.push(("NEEDS", "YOUR GAME FILES".into()));
+        }
+        if port.auto {
+            rows.push(("RECIPE", "NONE: AS RELEASED".into()));
+        }
+        if self.is_new(&port.id) {
+            rows.push(("IN CATALOG", format!("NEW, SINCE {}", self.seen.get(&port.id).cloned().unwrap_or_default())));
         }
         let sh = App::sheet(c, p, sx, TOP, w - sx - EDGE - 10, &rows);
 
@@ -1716,7 +2046,7 @@ impl App {
         self.chrome(c, p, &format!("SUBJECT: {}", m.name.to_uppercase()), "[BY HAND]");
         let facts = join(&[m.categories.join(", "), m.status.clone(), owned_word(&m.assets)]).to_uppercase();
         c.text_fit(EDGE + 12, EDGE + BAR + 4, SMALL, p.dim, &facts.replace(" · ", " \\\\ "), w - 2 * EDGE - 24);
-        let (cw, ch) = self.draw_cover(c, p, EDGE + 6, TOP, &m.cover);
+        let (cw, ch) = self.draw_cover(c, p, EDGE + 6, TOP, &m.cover, 3);
         let sx = EDGE + 6 + cw + 18;
         let mut ty = TOP;
         for l in c.wrap(BODY, "Port Store has no recipe for this one yet: install it by hand from its page, on a computer.", w - sx - EDGE - 10) {
@@ -1847,8 +2177,8 @@ impl App {
             let (label, count) = match choice {
                 Choice::All(n) => (format!("ALL {}", TABS[t].1), *n),
                 Choice::Category(name, n) => (name.to_uppercase(), *n),
-                Choice::Line => {
-                    c.text(x + 14, ty + 1, SMALL, p.faint, "-- CHANNEL --");
+                Choice::Line(heading) => {
+                    c.text(x + 14, ty + 1, SMALL, p.faint, &format!("-- {heading} --"));
                     ty += row;
                     continue;
                 }
@@ -1876,6 +2206,7 @@ impl App {
             self.look.effects_name().to_string(),
             self.look.pictures_name().to_string(),
             if self.look.dev { "SHOWN" } else { "HIDDEN" }.to_string(),
+            if self.in_games { "ON" } else { "OFF" }.to_string(),
         ];
         let mut ty = y + BAR + 8;
         for (n, (label, value)) in SYSTEM.iter().zip(values).enumerate() {
@@ -1889,6 +2220,92 @@ impl App {
             ty += row;
         }
         buttons(c, p, x + w - 12, y + h - 36, &[("<>", "CHANGE"), ("B", "CLOSE")]);
+    }
+
+    /// A homebrew entry's page: its screenshot, its facts, what is said of it.
+    fn draw_brew(&mut self, c: &mut Canvas, p: &Palette, slug: &str, scroll: usize) {
+        let Some(e) = self.brews.entry(slug).cloned() else { return };
+        let state = self.brew_state(slug);
+        let w = c.w as i32;
+        let label = match &state {
+            State::Installed(_) => "[INSTALLED]".to_string(),
+            State::Update(_) => "[NEWER ROM IN THE LIST]".to_string(),
+            _ => "[NOT INSTALLED]".to_string(),
+        };
+        self.chrome(c, p, &format!("SUBJECT: {}", e.title.to_uppercase()), &label);
+        let facts = format!("HOMEBREW \\\\ {} \\\\ {}", e.system_name().to_uppercase(), e.kind.to_uppercase());
+        c.text_fit(EDGE + 12, EDGE + BAR + 4, SMALL, p.dim, &facts, w - 2 * EDGE - 24);
+        let (cw, ch) = self.draw_cover(c, p, EDGE + 6, TOP, &e.shot, 1);
+        let sx = EDGE + 6 + cw + 18;
+        let rows = vec![
+            ("DEVELOPER", e.devs.join(", ")),
+            ("RELEASED", e.date.clone()),
+            ("IN THE HUB", e.added.clone()),
+            ("SIZE", size(e.file.size)),
+            ("LICENSE", e.license.clone()),
+            ("GOES TO", format!("Roms/{}", e.folder())),
+        ];
+        let sh = App::sheet(c, p, sx, TOP, w - sx - EDGE - 10, &rows);
+        let mut lines: Vec<(u16, u32, String)> = Vec::new();
+        let width = w - 2 * EDGE - 50;
+        let para = |c: &mut Canvas, lines: &mut Vec<(u16, u32, String)>, px: u16, color: u32, text: &str| {
+            for l in c.wrap(px, text, width) {
+                lines.push((px, color, l));
+            }
+        };
+        if !e.desc.is_empty() {
+            para(c, &mut lines, BODY, p.fg, &e.desc);
+            lines.push((8, p.dim, String::new()));
+        }
+        if !e.tags.is_empty() {
+            para(c, &mut lines, SMALL, p.dim, &format!("TAGS: {}", e.tags.join(", ").to_uppercase()));
+        }
+        if !e.site.is_empty() {
+            para(c, &mut lines, SMALL, p.hi, e.site.trim_start_matches("https://"));
+        }
+        para(c, &mut lines, SMALL, p.dim, &format!("FROM HOMEBREW HUB (HH.GBDEV.IO): hh.gbdev.io/game/{}", e.slug));
+        para(c, &mut lines, SMALL, p.dim, &format!("FILE: {} (WITHOUT WI-FI: PUT IT IN APP/PORTSTORE/DOWNLOADS)", e.file.name));
+        self.notes(c, p, TOP + ch.max(sh) + 6, "NOTES", &lines, scroll);
+        let verb = match state {
+            State::Installed(_) => "REINSTALL",
+            State::Update(_) => "UPDATE",
+            _ => "INSTALL",
+        };
+        let mut keys = vec![("A", verb)];
+        if matches!(state, State::Installed(_) | State::Update(_)) {
+            keys.push(("X", "REMOVE"));
+        }
+        keys.push(("B", "BACK"));
+        self.softkeys(c, p, &keys);
+    }
+
+    /// The ports new in the catalog since the last look.
+    fn draw_arrivals(&mut self, c: &mut Canvas, p: &Palette, at: usize) {
+        let w = (c.w as i32 - 60).min(520);
+        let row = 26;
+        let room = ((App::foot(c) - TOP - 40 - BAR - 44) / row).max(3) as usize;
+        let shown = self.arrivals.len().min(room);
+        let h = BAR + 10 + shown as i32 * row + 44;
+        let (x, y) = ((c.w as i32 - w) / 2, TOP + 10);
+        if !self.opening(c, p, x, y, w, h) {
+            return;
+        }
+        window(c, p, x, y, w, h, "NEW ARRIVALS", &self.arrivals.len().to_string());
+        let first = at.saturating_sub(room - 1);
+        let mut ty = y + BAR + 6;
+        for (n, id) in self.arrivals.clone().iter().enumerate().skip(first).take(room) {
+            let Some(port) = self.port(id).cloned() else { continue };
+            let picked = n == at;
+            if picked {
+                c.fill(x + 6, ty, w - 12, row - 2, p.fg);
+            }
+            let (ink, dim) = if picked { (p.bg, p.bg) } else { (p.fg, p.dim) };
+            let kind = if port.is_app() { "APP" } else { "GAME" };
+            let kw = c.text_right(x + w - 16, ty + 1, SMALL, dim, kind);
+            c.text_fit(x + 16, ty + 1, SMALL, ink, &port.name, w - kw - 44);
+            ty += row;
+        }
+        buttons(c, p, x + w - 12, y + h - 36, &[("A", "OPEN"), ("B", "CLOSE")]);
     }
 }
 
@@ -2161,6 +2578,22 @@ pub fn shots(store: Store, dir: &std::path::Path, ids: &[String]) -> Result<(), 
     app.key(Key::L2);
     save(&mut app, "system")?;
     app.view = View::List;
+    // Homebrew: its list (from the copy at hand), filtered, and an entry's page.
+    app.tab = Tab::Homebrew;
+    app.filter[2] = Some("GBA".into());
+    save(&mut app, "list-homebrew-gba")?;
+    app.filter[2] = None;
+    if let Some(e) = app.brews.entries.iter().find(|e| !e.shot.is_empty() && !e.desc.is_empty()).cloned() {
+        app.view = View::Brew { slug: e.slug.clone(), scroll: 0 };
+        save(&mut app, &format!("homebrew-{}", e.slug))?;
+    }
+    app.tab = Tab::Games;
+    // New arrivals, as if the first three ports had just come.
+    app.arrivals = app.index.ports.iter().filter(|p| p.id != crate::SELF_ID).take(3).map(|p| p.id.clone()).collect();
+    app.view = View::Arrivals { at: 0 };
+    save(&mut app, "arrivals")?;
+    app.arrivals.clear();
+    app.view = View::List;
     let ids: Vec<String> = match ids.is_empty() {
         true => app.index.ports.first().map(|p| p.id.clone()).into_iter().collect(),
         false => ids.to_vec(),
@@ -2228,6 +2661,7 @@ mod tests {
                 Item::End => "---".into(),
                 Item::Port(p) => app.index.ports[*p].name.clone(),
                 Item::Manual(m) => app.index.manual[*m].name.clone(),
+                Item::Brew(b) => format!("hb {}", app.brews.entries[*b].title),
             })
             .collect()
     }
@@ -2329,6 +2763,7 @@ mod tests {
         app.key(Key::Select);
         let choices = app.choices();
         assert_eq!(choices.last(), Some(&Choice::Dev(1)));
+        assert_eq!(choices[2], Choice::Line("CHANNEL"));
         // Down past the line, to the development builds.
         app.key(Key::Up);
         assert!(matches!(app.view, View::Filter { at: 3 }), "{:?}", app.view);
@@ -2355,6 +2790,65 @@ mod tests {
         assert_eq!(Look::load(&app.store.card.home).theme, "classic");
         app.key(Key::B);
         assert!(matches!(app.view, View::List));
+    }
+
+    fn brews(app: &mut App, list: &[(&str, &str, &str, &str)]) {
+        app.brews.entries = list
+            .iter()
+            .map(|(slug, title, system, added)| homebrew::Entry {
+                slug: slug.to_string(),
+                title: title.to_string(),
+                system: system.to_string(),
+                kind: "game".into(),
+                added: added.to_string(),
+                ..Default::default()
+            })
+            .collect();
+    }
+
+    #[test]
+    fn homebrew_lists_by_title_or_newest_and_filters_by_system() {
+        let mut app = app(&[("A", "", &["x"])]);
+        brews(&mut app, &[("z", "Zap", "GBA", "2026-01-01"), ("b", "Bloop", "GB", "2026-05-01"), ("c", "Cave", "GBA", "2025-01-01")]);
+        app.key(Key::R1);
+        app.key(Key::R1);
+        assert_eq!(app.tab, Tab::Homebrew);
+        assert_eq!(names(&app), ["hb Bloop", "hb Cave", "hb Zap"]);
+        app.key(Key::R2);
+        assert_eq!(names(&app), ["hb Bloop", "hb Zap", "hb Cave"]);
+        app.key(Key::R2);
+        app.key(Key::Select);
+        assert_eq!(
+            app.choices(),
+            [
+                Choice::All(3),
+                Choice::Category("GBA".into(), 2),
+                Choice::Category("GB".into(), 1),
+                Choice::Line("KIND"),
+                Choice::Category("game".into(), 3)
+            ]
+        );
+        app.key(Key::Down);
+        app.key(Key::A);
+        assert_eq!(names(&app), ["hb Cave", "hb Zap"]);
+        app.key(Key::A);
+        assert!(matches!(&app.view, View::Brew { slug, .. } if slug == "c"));
+        app.key(Key::X);
+        assert!(matches!(app.view, View::Brew { .. }), "nothing to remove");
+        app.key(Key::A);
+        assert!(matches!(&app.view, View::Confirm { yes: Action::InstallBrew(s), .. } if s == "c"));
+    }
+
+    #[test]
+    fn new_arrivals_open_on_the_list_and_lead_to_a_port() {
+        let mut app = app(&[("A", "", &["x"]), ("B", "", &["x"])]);
+        app.arrivals = vec!["b".into(), "gone".into()];
+        app.pump();
+        assert!(matches!(app.view, View::Arrivals { at: 0 }));
+        assert_eq!(app.arrivals, ["b"], "only ports still in the catalog");
+        app.key(Key::A);
+        assert!(matches!(&app.view, View::Details { id, .. } if id == "b"));
+        assert!(app.arrivals.is_empty(), "announced once");
     }
 
     #[test]

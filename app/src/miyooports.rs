@@ -260,6 +260,37 @@ pub fn ensure_system(root: &Path) -> io::Result<()> {
     fs::create_dir_all(root.join(DIR).join("Imgs"))
 }
 
+/// Port Store's own entry in MiyooPorts (an option): from Games it can go into
+/// Favorites like a game.
+const SELF_ENTRY: &str = "Roms/MiyooPorts/Port Store.sh";
+const SELF_ART: &str = "Roms/MiyooPorts/Imgs/Port Store.png";
+const SELF_MARK: &str = "# Port Store: its own entry in MiyooPorts.";
+static SELF_ICON: &[u8] = include_bytes!("../../assets/icon.png");
+
+/// Whether Port Store's own entry is in MiyooPorts.
+pub fn self_entry(root: &Path) -> bool {
+    fs::read_to_string(root.join(SELF_ENTRY)).is_ok_and(|t| t.contains(SELF_MARK))
+}
+
+/// Put Port Store's own entry in MiyooPorts, or take it away (only if it is Port
+/// Store's: a game of that name stays).
+pub fn set_self_entry(root: &Path, on: bool) -> io::Result<()> {
+    if on {
+        if root.join(SELF_ENTRY).exists() && !self_entry(root) {
+            return Err(io::Error::other("a game in MiyooPorts is called Port Store already"));
+        }
+        ensure_system(root)?;
+        let script = format!("#!/bin/sh\n{SELF_MARK}\ncd /mnt/SDCARD/App/PortStore || exit 1\nexec sh ./launch.sh\n");
+        fs::write(root.join(SELF_ENTRY), script)?;
+        fs::write(root.join(SELF_ART), SELF_ICON)?;
+    } else if self_entry(root) {
+        fs::remove_file(root.join(SELF_ENTRY))?;
+        let _ = fs::remove_file(root.join(SELF_ART));
+    }
+    reset_list(root, DIR);
+    Ok(())
+}
+
 /// MainUI lists a folder from its cache: dropped, it lists it afresh.
 pub fn reset_list(root: &Path, dir: &str) {
     let dir = root.join(dir);

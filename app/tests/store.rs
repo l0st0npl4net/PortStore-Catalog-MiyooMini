@@ -1375,3 +1375,129 @@ fn an_app_released_as_a_shortcut_for_ports_starts_from_miyooports() {
     assert!(rec.shortcuts, "{:?}", rec.files);
     assert!(card.join("Roms/MiyooPorts/Sound Lab.sh").exists());
 }
+
+fn blob_id(bytes: &[u8]) -> String {
+    use sha1::Digest;
+    let mut h = sha1::Sha1::new();
+    h.update(format!("blob {}\0", bytes.len()).as_bytes());
+    h.update(bytes);
+    hex(&h.finalize())
+}
+
+fn brew(slug: &str, title: &str, system: &str, rom: &[u8]) -> serde_json::Value {
+    serde_json::json!({
+        "slug": slug, "title": title, "system": system, "type": "game",
+        "file": {
+            "url": format!("https://raw.githubusercontent.com/gbdev/database/abc/entries/{slug}/{slug}.gb"),
+            "name": format!("{slug}.gb"), "size": rom.len(), "sha1": blob_id(rom)
+        },
+        "shot": format!("https://raw.githubusercontent.com/gbdev/database/abc/entries/{slug}/shot.PNG")
+    })
+}
+
+#[test]
+fn the_homebrew_list_keeps_only_entries_from_github_raw() {
+    let good = brew("a-game", "A Game", "GB", b"rom");
+    let mut elsewhere = brew("b-game", "B", "GB", b"rom");
+    elsewhere["file"]["url"] = "https://example.com/b.gb".into();
+    let mut unknown = brew("c-game", "C", "N64", b"rom");
+    unknown["system"] = "N64".into();
+    let mut climbing = brew("../d", "D", "GB", b"rom");
+    climbing["slug"] = "../d".into();
+    let text = serde_json::json!({"format": 1, "entries": [good, elsewhere, unknown, climbing, {"slug": 1}]}).to_string();
+    let list = portstore::homebrew::Homebrew::parse(&text).unwrap();
+    let slugs: Vec<&str> = list.entries.iter().map(|e| e.slug.as_str()).collect();
+    assert_eq!(slugs, ["a-game"]);
+    assert_eq!(list.entries[0].folder(), "GB");
+}
+
+#[test]
+fn homebrew_goes_into_its_systems_folder_and_comes_off_again() {
+    let card = temp("homebrew");
+    let s = store(&card);
+    let rom = b"GB ROM BYTES".to_vec();
+    let list = serde_json::json!({"format": 1, "generated": "2026-10-21", "entries": [
+        brew("tetris-clone", "Blocks: The Game", "GB", &rom),
+        brew("other", "Blocks: The Game", "GB", b"another"),
+    ]});
+    fs::write(card.join("App/PortStore/homebrew.json"), list.to_string()).unwrap();
+    let list = s.load_homebrew();
+    assert_eq!(list.entries.len(), 2);
+    // Without Wi-Fi: the ROM brought into downloads/ is taken when it is the list's.
+    fs::create_dir_all(card.join("App/PortStore/downloads")).unwrap();
+    fs::write(card.join("App/PortStore/downloads/tetris-clone.gb"), &rom).unwrap();
+    fs::write(card.join("App/PortStore/downloads/other.gb"), b"another").unwrap();
+    let e = list.entry("tetris-clone").unwrap();
+    let rec = s.install_homebrew(e, &AtomicBool::new(false), &mut |_| {}).unwrap();
+    assert_eq!(rec.rom, "Roms/GB/Blocks The Game.gb");
+    assert_eq!(fs::read(card.join(&rec.rom)).unwrap(), rom);
+    assert!(matches!(s.homebrew_state(e), State::Installed(_)));
+    // Another of the same title never replaces it.
+    let other = s.install_homebrew(list.entry("other").unwrap(), &AtomicBool::new(false), &mut |_| {}).unwrap();
+    assert_eq!(other.rom, "Roms/GB/Blocks The Game (2).gb");
+    // A newer ROM in the list is an update, and keeps the name (its saves go by it).
+    let mut newer = e.clone();
+    newer.file.sha1 = blob_id(b"NEWER");
+    assert!(matches!(s.homebrew_state(&newer), State::Update(_)));
+    fs::write(card.join("App/PortStore/downloads/tetris-clone.gb"), b"NEWER").unwrap();
+    newer.file.size = 5;
+    let again = s.install_homebrew(&newer, &AtomicBool::new(false), &mut |_| {}).unwrap();
+    assert_eq!(again.rom, rec.rom);
+    assert_eq!(fs::read(card.join(&rec.rom)).unwrap(), b"NEWER");
+    // ROMs are told by their git blob id, as git hash-object gives it.
+    let blob = portstore::homebrew::blob_sha1(&card.join(&rec.rom), &AtomicBool::new(false)).unwrap();
+    assert_eq!(blob, blob_id(b"NEWER"));
+    s.remove_homebrew("tetris-clone").unwrap();
+    assert!(!card.join(&rec.rom).exists());
+    assert!(card.join(&other.rom).exists(), "the other stays");
+    assert_eq!(s.homebrew_state(e), State::Absent);
+}
+
+#[test]
+fn new_ports_are_announced_once_and_not_at_the_first_look() {
+    let card = temp("arrivals");
+    let s = store(&card);
+    let port = |id: &str| Port { id: id.into(), name: id.into(), ..Port::default() };
+    let mut index = Index { ports: vec![port("a"), port("b")], ..Index::default() };
+    let (new, seen) = s.arrivals(&index);
+    assert!(new.is_empty(), "the first look announces nothing");
+    assert_eq!(seen["a"], "");
+    index.ports.push(port("c"));
+    let (new, seen) = s.arrivals(&index);
+    assert_eq!(new, ["c"]);
+    assert_eq!(seen["c"], portstore::today());
+    assert!(s.arrivals(&index).0.is_empty(), "once");
+}
+
+#[test]
+fn a_ports_own_cleanup_runs_before_its_files_go() {
+    let card = temp("uninstall-hook");
+    let src = temp("uninstall-hook-src");
+    let s = store(&card);
+    let z = src.join("Game-1.0.zip");
+    let hook = b"echo \"$MIXTAPE_UNINSTALL $PORTSTORE_UNINSTALL\" > \"$SDCARD/cleaned\"\n";
+    zip(&z, &[("Game-1.0/App/Game/launch.sh", b"x", false), ("Game-1.0/App/Game/mixtape-uninstall.sh", hook, false)]);
+    let p = port("game", &z, "1.0");
+    s.install(&p, &AtomicBool::new(false), &mut |_| {}).unwrap();
+    s.remove("game", Some(&p)).unwrap();
+    assert_eq!(fs::read_to_string(card.join("cleaned")).unwrap(), "1 1\n");
+    assert!(!card.join("App/Game/mixtape-uninstall.sh").exists());
+}
+
+#[test]
+fn port_store_can_have_an_entry_of_its_own_in_miyooports() {
+    use portstore::miyooports::{self_entry, set_self_entry};
+    let card = temp("self-entry");
+    set_self_entry(&card, true).unwrap();
+    assert!(self_entry(&card));
+    let sh = fs::read_to_string(card.join("Roms/MiyooPorts/Port Store.sh")).unwrap();
+    assert!(sh.contains("exec sh ./launch.sh"));
+    assert!(card.join("Emu/MiyooPorts/config.json").exists());
+    set_self_entry(&card, false).unwrap();
+    assert!(!card.join("Roms/MiyooPorts/Port Store.sh").exists());
+    // A game of that name is never taken for it.
+    fs::write(card.join("Roms/MiyooPorts/Port Store.sh"), "#!/bin/sh\n").unwrap();
+    assert!(set_self_entry(&card, true).is_err());
+    set_self_entry(&card, false).unwrap();
+    assert!(card.join("Roms/MiyooPorts/Port Store.sh").exists());
+}

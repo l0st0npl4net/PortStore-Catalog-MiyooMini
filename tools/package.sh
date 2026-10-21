@@ -29,6 +29,7 @@ if [ -n "$url" ] && [ -z "${PORTSTORE_LOCAL_CATALOG:-}" ]; then
 elif [ -f "$here/site/index.json" ]; then
     cp "$here/site/index.json" "$app/index.json"
     [ -d "$here/site/img" ] && cp -r "$here/site/img" "$app/img"
+    [ -f "$here/site/homebrew.json" ] && cp "$here/site/homebrew.json" "$app/homebrew.json"
 fi
 cp "$here/LICENSE" "$app/licenses/PortStore.txt"
 cp "$here/assets/DejaVu_License.txt" "$app/licenses/DejaVu.txt"

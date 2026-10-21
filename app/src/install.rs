@@ -483,7 +483,7 @@ impl Card {
     }
 }
 
-fn move_file(from: &Path, to: &Path) -> io::Result<()> {
+pub fn move_file(from: &Path, to: &Path) -> io::Result<()> {
     match fs::rename(from, to) {
         Ok(()) => Ok(()),
         // Nothing to move: the file in place stays.

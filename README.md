@@ -5,11 +5,16 @@ Install, update and remove ports right on a Miyoo Mini, Mini Plus, Mini v4 or Mi
 
 ![Games](docs/screenshots/games.png) ![A port's page](docs/screenshots/port.png)
 
-- **63 ports and apps**, including all 12 native N64 games of
+- **70 ports and apps**, including all 12 native N64 games of
   [Miyoo64](https://github.com/mr-finster/miyoo64) (Mario Kart 64, Super Mario 64, Ocarina
-  of Time, GoldenEye 007…), Undertale, Fallout 1 and 2, Half-Life, Tomb Raider, OpenRCT2,
-  LAST LIGHT from [slop.kitchen](https://slop.kitchen) and apps like Moonlight, Syncthing or
-  Better WiFi; development builds of slop.kitchen's games when you ask for them.
+  of Time, GoldenEye 007…), Undertale, Fallout 1 and 2, Half-Life, Hexen II, Tomb Raider,
+  OpenRCT2, LAST LIGHT from [slop.kitchen](https://slop.kitchen) and apps like Moonlight,
+  Syncthing or Better WiFi; development builds of slop.kitchen's games when you ask for them.
+- **1,600+ homebrew games, demos and tools** for Game Boy, Game Boy Color, Game Boy Advance
+  and NES from [Homebrew Hub](https://hh.gbdev.io), installed straight into OnionOS's own
+  folders with their box art.
+- **New arrivals:** ports new in the catalog are announced when Port Store starts, and
+  marked NEW for two weeks.
 - **A terminal on a picture tube:** green, amber, ice, white or red phosphor (or the classic
   look), scan lines and glow, the tube switching on and off, flicker and tearing as screens
   change.
@@ -21,8 +26,8 @@ Install, update and remove ports right on a Miyoo Mini, Mini Plus, Mini v4 or Mi
 - Games that need **your own files** (a ROM, the game's data) say what to put where; copy them
   into one folder as they are and Port Store puts them in place.
 - Works **without Wi-Fi** too, with files brought on a computer.
-- Everything is downloaded from the authors' own GitHub releases and checked against the
-  catalog's SHA-256. Port Store hosts no games.
+- Everything is downloaded from its authors' own releases (or Homebrew Hub's databases) and
+  checked against the catalog's checksum. Port Store hosts no games.
 - Safe with your card: files are unpacked and checked before anything is put in place, and
   updates and removals touch only what Port Store put there: never saves, settings, your game
   files or another port's files.
@@ -48,19 +53,26 @@ release over it once.
 | Button | |
 |---|---|
 | D-pad | move; Left / Right: a page |
-| L1 / R1 | tabs: Games, Apps, Installed, Updates, More |
+| L1 / R1 | tabs: Games, Apps, Homebrew, Installed, Updates, More |
 | A | open a port; on its page: install, update or reinstall |
 | X | list: mark a port (Start installs the marked ones); page: remove |
 | Start | list: install the marked ports, one after another; page: move your files found in `import` into place |
-| Select | Games, Apps: the filter (a category, development builds); Updates: update all |
+| Select | Games, Apps, Homebrew: the filter (a category or system, development builds); Updates: update all |
 | R2 | newest releases first / A to Z |
-| L2 | the system window: theme, effects, pictures, development builds |
-| Y | list: download the newest catalog again; page: check your files again |
+| L2 | the system window: theme, effects, pictures, development builds, Port Store in Games |
+| Y | list: download the newest catalog again (Homebrew: its list); page: check your files again |
 | B | back; on the list: quit |
 
 - **Games** lists the games, collections such as Miyoo64 under their own heading; **Apps** the
-  apps; **Installed** what Port Store installed; **More** ports Port Store cannot install yet,
-  with a link to their page.
+  apps; **Homebrew** Homebrew Hub's games, demos, tools and music; **Installed** what Port Store
+  installed (homebrew at the end); **More** ports Port Store cannot install yet, with a link to
+  their page.
+- Ports marked `AUTO` have no recipe: their release is laid out for the card as it is, and
+  the catalog's build checked it like any other. `NEW`: in the catalog for less than two
+  weeks.
+- **New arrivals:** when the catalog has ports it did not have at your last look, a window
+  lists them as Port Store starts (A opens one, B closes it). The very first start announces
+  nothing.
 - A port's page shows its picture, version, size, what it is, and what you bring for it, checked
   on the card: `[OK]` found, `[--]` missing, `[!!]` another version of the game's ROM.
 - **The filter** (Select): a window with every category and how many ports it has; pick one,
@@ -71,6 +83,27 @@ release over it once.
   another, and tells at the end what was installed, what not and why.
 - **Removing** a port takes away the files Port Store put on the card. Your saves, settings and
   game files stay.
+
+## Homebrew
+
+![Homebrew](docs/screenshots/homebrew.png) ![A homebrew page](docs/screenshots/homebrew-page.png)
+
+The **Homebrew** tab lists the Game Boy, Game Boy Color, Game Boy Advance and NES homebrew of
+[Homebrew Hub](https://hh.gbdev.io), the archive behind [gbdev.io](https://gbdev.io),
+[gbadev.org](https://gbadev.org) and [nesdev.org](https://www.nesdev.org): about 1,600 games,
+demos, tools and music. Select filters by system or kind, R2 puts the newest additions first.
+
+- Installing puts the ROM straight into OnionOS's folder for its system (`Roms/GBA`,
+  `Roms/GBC`, `Roms/GB`, `Roms/FC` for the NES), named after the game, with its screenshot as
+  box art: it is in Games next to your other games of that system. A file of the same name is
+  never replaced.
+- The ROM comes from its database's own repository on GitHub and is checked against the
+  list (its git blob id) before it goes onto the card.
+- Removing takes away the ROM and the box art Port Store added; saves stay.
+- The list is built every day with the catalog and downloaded when you first open the tab
+  each day (Y downloads it again); a copy comes with Port Store. Pictures are downloaded as
+  the list shows them.
+- ROM hacks of commercial games are not listed.
 
 ## The screen
 
@@ -90,6 +123,8 @@ Right change a setting, B closes it; settings are kept):
   **off** (a letter in a box in the lists, a page's facts in the picture's place; nothing
   downloaded for them).
 - **Development builds:** shown or hidden, as in the filter.
+- **Port Store in Games:** on, Port Store has an entry of its own in **Games → MiyooPorts**,
+  so you can add it to Favorites and start it from the main menu. Off takes it away again.
 
 ![Amber](docs/screenshots/amber.png) ![Classic](docs/screenshots/classic.png)
 
@@ -193,6 +228,10 @@ A port gets in with a recipe in a pull request, checked automatically: see
   lists its other entries under More.
 - [slop.kitchen](https://slop.kitchen) and the LAST LIGHT authors: LAST LIGHT and the
   development builds of their games, from their own catalog, with its pictures and notes.
+- [Homebrew Hub](https://hh.gbdev.io) and the communities of gbdev, gbadev and nesdev, and
+  every homebrew author: the Homebrew tab's list, ROMs and screenshots.
+- [Mixtape](https://github.com/snyderman3000/mixtape): the format of porters' own catalogs,
+  and the idea of a Homebrew tab and of cleanup scripts.
 - [VT323](https://fonts.google.com/specimen/VT323) by Peter Hull (The VT323 Project Authors):
   the terminal's font.
 - Every port's author, whose releases Port Store installs, and

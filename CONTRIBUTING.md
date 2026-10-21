@@ -4,6 +4,17 @@ A port gets into Port Store with a **recipe**: one JSON file in `recipes/ports/`
 GitHub release file to take and what of it goes onto the SD card. Nothing is uploaded here:
 devices download the file from its author's release.
 
+A port listed in [MiyooMini-Ports](https://github.com/Producdevity/MiyooMini-Ports) whose
+GitHub release is one archive laid out for the card (`App/<Name>/…` or `Roms/PORTS/…`, with
+something that starts) needs no recipe: the catalog's build takes it by itself, marked `AUTO`.
+A recipe is for everything else: another layout, files the user brings, settings to keep.
+
+**Port authors:** if your port changes anything outside its own folders, ship a
+`portstore-uninstall.sh` (or `mixtape-uninstall.sh`, the name Mixtape uses: one script for
+both) anywhere in it. Before removing the port, Port Store runs it with `sh` in its folder,
+with `PORTSTORE_UNINSTALL=1`, `MIXTAPE_UNINSTALL=1` and `SDCARD` (the card's root) set, for 30
+seconds at most; the files go however it ends.
+
 1. **Check the release.** It has to run on OnionOS on the Mini, as a release file (zip, tar,
    tar.gz or 7z). Look at its layout (`unzip -l file.zip`): `App/<Name>/…` (an app) or
    `Roms/PORTS/…` (a port for OnionOS's Ports Collection) work as they are.

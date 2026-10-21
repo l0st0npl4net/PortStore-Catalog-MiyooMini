@@ -33,6 +33,7 @@ Port Store hosts no ports: only the catalog and its pictures are on GitHub Pages
 | `recipes/miyoo64/`, `recipes/ports/` | recipes; `recipes/portstore.json` is Port Store itself |
 | `recipes/sources/` | porters' own catalogs (Mixtape's format): `slop-kitchen.json`, `slop-kitchen-dev.json` |
 | `index/build.py` | the catalog builder (Python 3, standard library; Pillow for pictures, py7zr for 7z) |
+| `index/homebrew.py` | builds `homebrew.json`, Homebrew Hub's list for the Homebrew tab (standard library only) |
 | `index/report.py` | keeps the "Recipes failing" issue up to date (CI only) |
 | `index/check_recipes.py` | checks and builds given recipes, reports in Markdown (pull requests) |
 | `.github/workflows/index.yml` | builds and publishes the catalog |
@@ -71,12 +72,14 @@ Port Store hosts no ports: only the catalog and its pictures are on GitHub Pages
    The previous index is tried three times; when it cannot be had (but exists), the build
    stops rather than publish a catalog without the ports failing now. Only the release files
    this build used stay in the cache.
-4. `index/report.py`: keeps one issue "Recipes failing" (label `recipe-failure`) up to date:
+4. `index/homebrew.py --out site/homebrew.json --previous <published homebrew.json>` (see
+   "Homebrew" below); when Homebrew Hub or GitHub cannot be read, the published list is kept.
+5. `index/report.py`: keeps one issue "Recipes failing" (label `recipe-failure`) up to date:
    recipes that failed in this build and the one before (a host down for a minute opens
    nothing), and warnings (a newer release passed over because it has no file matching
    `asset`). The last such issue is reopened rather than a new one made; it is closed once
    nothing fails.
-5. Uploads `site/` (index and pictures) and deploys it to GitHub Pages.
+6. Uploads `site/` (index, homebrew list and pictures) and deploys it to GitHub Pages.
 
 Repository settings it needs: **Settings → Pages → Source: GitHub Actions**. Permissions are
 per job: the build, which reads untrusted archives, gets `contents: read` and `issues: write`;
@@ -143,6 +146,44 @@ release file does not take a port away from the devices. Catalog entries of
 [Producdevity/MiyooMini-Ports](https://github.com/Producdevity/MiyooMini-Ports) without a recipe
 are listed under `manual` (the More tab).
 
+### Ports without a recipe (`auto`)
+
+After the recipes and sources, `auto_entries` tries every entry of MiyooMini-Ports that no
+recipe covers and whose `upstream` is a GitHub repository: its newest release (not a
+pre-release) with archives not named for another system (`source`, `minui`, `knulli`,
+`windows`…; `AUTO_NOT`); of several, the one whose name says `onion`/`miyoo` most, the same
+file packed twice taken as a zip; none plainly the one, no entry. It is then built as a recipe
+with the default `take` (or `into App/<repo>/` when `launch.sh` or `config.json` is at the
+archive's top) and kept only when something in it starts (`App/<Name>/launch.sh` or
+`config.json`, a Ports shortcut; `AUTO_STARTS`) and it is at most 600 MB. It gets `"auto":
+true` (the device marks it `AUTO`). Those that do not qualify stay under `manual`, with the
+reason in the build's log; one that fails for another reason (a host down) keeps its entry of
+the previous index. `--no-auto` builds without them; `--only` never tries them.
+
+### Homebrew (`index/homebrew.py`)
+
+The Homebrew tab's list, `homebrew.json` next to `index.json`:
+
+1. **Entries** from Homebrew Hub's API, `https://hh3.gbdev.io/api/search?sort=slug&order=asc&results=50&page=N`
+   (about 33 pages; those are the API's own parameter names, its written docs give others).
+   Left out: hacks of commercial games (`typetag` `hackrom`), `nsfw`, entries without a ROM
+   for GB, GBC, GBA or NES (the playable file, the default first, as Homebrew Hub's site picks
+   it), ROMs over 32 MB.
+2. **Files** from the git repositories behind it (`baserepo`: gbdev/database,
+   gbadev-org/games, nesdev-org/homebrew-db), one recursive tree each at the default branch's
+   commit (three GitHub API requests): each ROM's size and git blob id (SHA-1 of
+   `blob <size>\0` and its bytes). The ROM's and the first PNG screenshot's addresses are
+   `raw.githubusercontent.com/<repo>/<commit>/entries/<slug>/<file>`: pinned to that commit, so
+   the file is the one listed even after the database changes.
+3. **Fields** per entry: `slug`, `title`, `system` (`GBA`, `GBC`, `GB`, `NES`, by the ROM's
+   extension), `type`, `devs`, `tags`, `license`, `date` (read from the free-form dates
+   entries use), `added`, `desc` (600 characters at most), `site`, `file` {`url`, `name`,
+   `size`, `sha1`}, `shot`. About 1 MB for 1,600 entries.
+
+Nothing is downloaded or hosted here but the lists. The device takes only entries whose
+addresses are on `https://raw.githubusercontent.com/`, whose slug is a plain name and whose
+system it knows.
+
 ### `index.json`
 
 `format` (1; Port Store refuses others), `generated` (UTC time; the newest catalog at hand
@@ -159,6 +200,7 @@ is not a plain name), is left out and logged, the rest of the catalog stands. A 
 | `file` | `url`, `name`, `size`, `sha256`, `kind` (`zip`, `tar`, `tar.gz`, `7z`) |
 | `strip`, `take`, `into`, `map`, `skip`, `keep`, `shortcut` | install rules, as in the recipe; a `keep` rule ending in `/` is a folder's, one with `*` (any characters but `/`) or `?` a pattern, else one file (`index::keeps`, `build.keeps`) |
 | `source` | the porter's catalog it comes from (sources only): any other version is an update |
+| `auto` | no recipe: the release goes onto the card as it is laid out (marked `AUTO`) |
 | `needs` | what the user brings: `what`, `hint`, `check`, `sha1`, `search`, `n64`, `title` |
 | `install` | `files`, `bytes`, `roots`, `marks` |
 
@@ -197,17 +239,18 @@ A porter with a catalog of their own in Mixtape's format: add `recipes/sources/<
 | `main.rs` | command line: no arguments → the screens; `list`, `install`, `remove`, `needs`, `refresh`, `shots` for testing |
 | `lib.rs` | `Store`: the card and the catalog's address. Loading the newest catalog at hand, `refresh`, `state` of a port, `install` (find or download the file, check it, install), `remove`, Ports Collection, the list for a computer (`to-download.txt`), version comparison (`newer`) |
 | `index.rs` | the catalog's types (`Index`, `Port`, `Need`, `Shortcut`…) |
+| `homebrew.rs` | the homebrew list (`Homebrew`, `Entry`), its download, git blob ids, installing a ROM into `Roms/<system>` with box art, records in `installed/homebrew/`, removal |
 | `fetch.rs` | downloads with OnionOS's curl (`/mnt/SDCARD/.tmp_update/bin/curl`, certificates checked against the bundled `cacert.pem`), progress, cancel; `file://` copied directly; SHA-256 |
 | `archive.rs` | zip (stored, deflate; CRC checked), tar, tar.gz readers of its own; 7z unpacked whole by OnionOS's 7-Zip into a folder, then read as one |
 | `install.rs` | `Card`: placing a port's files, install records, updates, removal, `conform` (bringing installed ports in line with how Port Store installs now) |
 | `miyooports.rs` | the MiyooPorts system: where Ports files are kept hidden, launchers, the system's files |
 | `needs.rs` | what the user brings: files in place (as `~Import ports` finds them), N64 ROMs by SHA-1 in any byte order (cached in `cache/roms.json`); files brought into `import/` and where they go |
-| `ui/mod.rs` | the screens: `App` (state, keys, jobs, drawing), boot screen, tabs, lists, a port's page, windows (questions, a job's event log, filter, system), the frame loop |
+| `ui/mod.rs` | the screens: `App` (state, keys, jobs, drawing), boot screen, tabs, lists, a port's and a homebrew entry's page, windows (questions, a job's event log, filter, system, new arrivals), the frame loop |
 | `ui/theme.rs` | the look: palettes (phosphor themes and the classic look), effects, the choices kept in `settings.json` (`Look`) |
 | `ui/crt.rs` | the picture tube over the drawn frame: scan lines, glow, rim, afterglow, and its moments (`Fx`) |
 | `ui/fb.rs`, `ui/input.rs` | the framebuffer (640×480, turned half a turn, 2 pages) and the buttons (evdev) |
 | `ui/canvas.rs` | drawing: rectangles, frames, dashes, text (fontdue: VT323, DejaVu Sans), pictures (as they are, or dithered in the screen's shades), PNG output |
-| `ui/pictures.rs` | pictures: bundled, cached or downloaded on a thread of their own |
+| `ui/pictures.rs` | pictures: bundled, cached or downloaded on a thread of their own (catalog pictures from next to the catalog, homebrew screenshots from GitHub); made to fit (`shrink`, the average of the pixels covered); no larger than 224×168 once read, and at most 120 kept in memory |
 
 No SDL: Port Store draws into a buffer and copies it to the framebuffer, and reads the buttons
 from `/dev/input/event*`. The layout follows the framebuffer's size (640×480 at least): the
@@ -295,11 +338,16 @@ App/PortStore/
   cacert.pem, licenses/
   installed/<id>.json                 per port: version, date, SHA-256, every file put on
                                       the card, its keep rules, how it starts
+  installed/homebrew/<slug>.json      per homebrew entry: its ROM's blob id, the ROM and box
+                                      art put on the card
+  homebrew.json                       the homebrew list it was released with
   import/                             game files brought on a computer, in any layout
   downloads/                          release files and index.json brought on a computer;
                                       to-download.txt, what Port Store asks for
-  cache/                              last catalog, pictures, ROM checksums, log, staging,
-                                      downloads by checksum (<sha>-<name>)
+  cache/                              last catalog and homebrew list, pictures (hb-img/ for
+                                      homebrew), ROM checksums, log, staging, downloads by
+                                      checksum (<sha>-<name>), seen.json (when each port was
+                                      first seen: new arrivals)
 ```
 
 `launch.sh` runs the program with OnionOS's libraries in `LD_LIBRARY_PATH` (for curl), logs to
@@ -380,6 +428,37 @@ MiyooPorts, launchers are made or brought up to date (written only when they dif
   nothing runs; once installed (over the running program, which keeps running from the
   replaced file), Port Store starts the new one with `exec`. `settings.json` is `keep`.
 
+### Homebrew on the device
+
+The tab's list is the newest at hand (bundled `homebrew.json`, `cache/`, `downloads/`); the
+first time the tab is shown each day it is downloaded quietly, Y downloads it with a window.
+An entry's state comes from its record: installed with the same blob id, an update with
+another, absent when the record's ROM is gone from the card. Installing (a job, like a
+port's): the ROM from `downloads/<name>` when its blob id matches, else downloaded into
+`cache/<sha1>-<name>` and checked (blob id) before anything is written; moved to
+`Roms/<folder>/<title>.<ext>` (a free name when one is taken; an update keeps the record's name,
+as saves go by it); the screenshot copied to `Roms/<folder>/Imgs/<name>.png` unless art of that
+name is there; the record written; MainUI's cache of that folder dropped. Removal deletes the
+recorded ROM and art (only under `Roms/`), never saves.
+
+### New arrivals
+
+`Store::arrivals` keeps `cache/seen.json`: each port's id and the day it was first seen on
+this card (`""` for the ports there at the very first look, which announces nothing;
+development builds and Port Store itself are never announced). Each catalog taken in (at start,
+downloaded quietly, Y) adds the new ones to those to announce; the window opens over the list
+once nothing else is offered (Port Store's own update first). A port first seen in the last 14
+days is marked `NEW`.
+
+### Cleanup scripts, Port Store in Games
+
+- Before a port's files are removed, a `portstore-uninstall.sh` or `mixtape-uninstall.sh` among
+  them is run (`Store::uninstall_hooks`): `sh` in its folder, `PORTSTORE_UNINSTALL=1`,
+  `MIXTAPE_UNINSTALL=1`, `SDCARD`, killed after 30 s; its output goes to the log.
+- The system window's "Port Store in Games" writes `Roms/MiyooPorts/Port Store.sh` (marked
+  as Port Store's own, starting `App/PortStore/launch.sh`) and its icon as box art, or removes
+  them; a game of that name is never touched.
+
 ### Game files from `import/`
 
 For each missing need, `needs::importable` looks in `import/` (6 levels deep): for a `check`
@@ -428,8 +507,11 @@ is used when it is the newest catalog. Files listed and already brought drop off
 - A card in a folder: `PORTSTORE_CARD=/tmp/card PORTSTORE_HOME=/tmp/card/App/PortStore
   target/debug/portstore install <id>` (release files can be placed in `downloads/`;
   `PORTSTORE_CURL`, `PORTSTORE_7Z` replace curl and 7-Zip).
+- Homebrew from the command line: `portstore homebrew [refresh | install SLUG | remove SLUG]`;
+  `python3 index/homebrew.py --out /tmp/hb/homebrew.json` builds the list (about 40 s).
 - Screens as PNGs, with the tube's light as it settles: `portstore shots DIR [ID…]` (boot
-  screen, all tabs, filter, system, a port's page and its question, a job);
+  screen, all tabs, filter, system, homebrew list and page, new arrivals, a port's page and
+  its question, a job);
   `PORTSTORE_SHOT_THEME=amber` for another theme, `PORTSTORE_SHOT_SIZE=752x560` for the
   larger screen.
 - The tube's moments as one picture (each at six points):

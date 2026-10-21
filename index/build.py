@@ -594,6 +594,95 @@ def check_port(p):
         need(k not in p or typed(p[k], kind), f"`{k}` type")
 
 
+# Ports of MiyooMini-Ports without a recipe, tried as their release lays itself out.
+AUTO_FILE = "auto (MiyooMini-Ports)"
+AUTO_MAX = 600 << 20
+# Release files for other systems or not for playing.
+AUTO_NOT = re.compile(r"source|src|debug|symbols|spruce|minui|nextui|allium|knulli|muos|trimui|rg35|anbernic"
+                      r"|garlic|batocera|windows|win32|win64|linux|macos|android|apk|deb\b|\.ipk", re.I)
+AUTO_LIKE = (("onion", 4), ("miyoo", 3), ("mini", 1), ("mmp", 1), ("arm", 1))
+# Something that starts: an app's entry or launcher, a shortcut for Ports.
+AUTO_STARTS = re.compile(r"^(App/[^/]+/(launch\.sh|config\.json)|Roms/PORTS/Shortcuts/.+\.(port|sh)|Roms/PORTS/[^/]+\.sh)$")
+
+
+def github_repo(url):
+    """owner/repo of a github.com address, or None."""
+    m = re.match(r"^https?://(?:www\.)?github\.com/([\w.-]+)/([\w.-]+?)(?:\.git)?(?:[/?#].*)?$", url or "")
+    return f"{m.group(1)}/{m.group(2)}" if m else None
+
+
+def auto_pick(releases):
+    """The newest release with one release file that is plainly for OnionOS: archives
+    only, none for other systems; of several, the one whose name says Onion or Miyoo
+    most, when one does more than the others."""
+    for rel in sorted(releases, key=lambda r: r.get("published_at") or "", reverse=True):
+        if rel.get("draft") or rel.get("prerelease"):
+            continue
+        files = [a for a in rel.get("assets", []) if kind_of(a["name"]) and not AUTO_NOT.search(a["name"])]
+        if not files:
+            continue
+        # The same file packed twice (game.zip, game.7z) is one: zip first.
+        stem = lambda a: a["name"][: -len(next(e for e in (".tar.gz", ".tgz", ".zip", ".tar", ".7z")
+                                               if a["name"].lower().endswith(e)))].lower()
+        packing = {"zip": 0, "tar.gz": 1, "tar": 2, "7z": 3}
+        files = [a for a in sorted(files, key=lambda a: packing[kind_of(a["name"])])
+                 if a is next(b for b in sorted(files, key=lambda b: packing[kind_of(b["name"])]) if stem(b) == stem(a))]
+        score = lambda a: sum(n for word, n in AUTO_LIKE if word in a["name"].lower())
+        files.sort(key=score, reverse=True)
+        if len(files) > 1 and score(files[0]) == score(files[1]):
+            raise ValueError(f"{rel.get('tag_name')}: no one file of {', '.join(a['name'] for a in files[:4])} is plainly the one")
+        return rel, files[0]
+    raise ValueError("no release with an archive for OnionOS")
+
+
+def auto_entries(catalog, taken_ids, taken_names, gh, cache, site, previous, previous_source):
+    """Entries for the ports of MiyooMini-Ports no recipe covers, whose GitHub release
+    goes onto the card as it is (App/..., Roms/PORTS/...) with something that starts:
+    built and checked like a recipe's, marked `auto`. The rest stay under `manual`."""
+    out = []
+    for name, c in sorted(catalog.items(), key=lambda kv: str(kv[0]).lower()):
+        repo = github_repo(c.get("upstream")) if isinstance(c.get("upstream"), str) else None
+        rid = slug(name) if isinstance(name, str) else ""
+        if name in taken_names or not repo or not rid or rid in taken_ids:
+            continue
+        recipe = {"id": rid, "_file": AUTO_FILE, "catalog": name, "github": repo, "asset": ".", "_auto": True}
+        try:
+            rel, asset = auto_pick(gh.releases(repo))
+            if (asset.get("size") or 0) > AUTO_MAX:
+                raise ValueError(f"{asset['name']}: larger than {AUTO_MAX >> 20} MB")
+            recipe["_release"] = (rel, asset, [])
+            try:
+                p = entry(recipe, catalog, gh, cache, site)
+            except ValueError as e:
+                # An app zipped without its folder (launch.sh at the top): into App/<repo>/.
+                if not str(e).startswith("nothing under") or not re.search(r"'(launch\.sh|config\.json)'", str(e)):
+                    raise
+                recipe["into"] = f"App/{re.sub(r'[^A-Za-z0-9._-]', '', repo.split('/')[1])}/"
+                p = entry(recipe, catalog, gh, cache, site)
+            if not any(AUTO_STARTS.match(f) for f in planned(p)):
+                raise ValueError("nothing in it starts (no App/<Name>/launch.sh, no Ports shortcut)")
+            p["auto"] = True
+            out.append(p)
+            taken_ids.add(rid)
+            log(f"auto  {rid:24} {p['version']:20} {p['install']['files']:4} files")
+        except ValueError as e:
+            log(f"      {rid}: not automatic: {e}")
+        except Exception as e:  # noqa: BLE001  (a host down: what was there before stays)
+            old = previous.get(rid)
+            if old and old.get("auto"):
+                out.append(old)
+                taken_ids.add(rid)
+                keep_pictures(old, previous_source, site)
+            log(f"      {rid}: not automatic now: {type(e).__name__}: {e}" + (" (kept)" if old else ""))
+    return out
+
+
+def planned(p):
+    """The card paths an entry installs, as the catalog lists them: its roots and
+    marks are not all of them, so the archive's own list is kept on the entry."""
+    return p.pop("_files", [])
+
+
 def mixtape_release(recipe):
     """A Mixtape catalog's entry as a release: its version, the day it was first seen,
     and its file (checked against the catalog's SHA-256 and size when it gives them)."""
@@ -617,7 +706,9 @@ def entry(recipe, catalog, gh, cache, site, warnings=None):
             meta[k] = recipe[k]
     if "name" not in meta:
         raise ValueError("no name (no catalog entry and none in the recipe)")
-    if "_mixtape" in recipe:
+    if "_release" in recipe:
+        rel, asset, passed = recipe["_release"]
+    elif "_mixtape" in recipe:
         rel, asset, passed = mixtape_release(recipe)
     else:
         rel, asset, passed = pick_release(gh.releases(recipe["github"]), recipe)
@@ -664,6 +755,8 @@ def entry(recipe, catalog, gh, cache, site, warnings=None):
     }
     if skipped:
         out["skipped"] = skipped
+    if recipe.get("_auto"):
+        out["_files"] = files
     from_archive = lambda: archive_image(path, kind, origin, files)
     from_catalog = lambda: meta.get("image") and fetch(meta["image"], cache)
     add_pictures(out, recipe["id"], [from_archive, from_catalog], site)
@@ -703,6 +796,7 @@ def main():
     ap.add_argument("--catalog", default=CATALOG_URL, help="ports.json, URL or file")
     ap.add_argument("--previous", help="the published index (URL or file): kept for ports that fail now")
     ap.add_argument("--only", nargs="*", help="recipe ids to build (the rest are left out)")
+    ap.add_argument("--no-auto", action="store_true", help="no automatic entries for ports without a recipe")
     args = ap.parse_args()
     if args.out is None:
         if args.only:
@@ -775,6 +869,10 @@ def main():
                 keep_pictures(old, args.previous, site)
             log(f"FAIL  {recipe['id']:24} {e}" + (f" (kept {', '.join(o['id'] + ' ' + o['version'] for o in kept)})" if kept else ""))
 
+    if not args.only and not args.no_auto:
+        names = {r.get("catalog") for r in load_recipes()} | {p["name"] for p in ports + dev}
+        ids = {r["id"] for r in recipes} | {p["id"] for p in ports + dev}
+        ports += auto_entries(catalog, ids, names, gh, cache, site, previous, args.previous)
     covered = {r.get("catalog") for r in recipes} | {p["name"] for p in ports}
     manual = [
         clean_meta({k: c[k] for k in ("name", "categories", "status", "assets", "notes", "porter", "image")

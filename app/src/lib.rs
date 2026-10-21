@@ -2,6 +2,7 @@
 //! authors' own releases (index.json, built by index/build.py).
 pub mod archive;
 pub mod fetch;
+pub mod homebrew;
 pub mod index;
 pub mod install;
 pub mod miyooports;
@@ -24,6 +25,28 @@ pub const SELF_ID: &str = "portstore";
 
 /// The list of files for a computer to download, in downloads/.
 pub const TO_DOWNLOAD: &str = "to-download.txt";
+
+/// Today (UTC), as YYYY-MM-DD; `days` before it with `days_ago`.
+pub fn today() -> String {
+    days_ago(0)
+}
+
+pub fn days_ago(days: i64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64 / 86400);
+    // Days since 1970-01-01 to a civil date (Howard Hinnant's algorithm).
+    let z = now - days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02}")
+}
 
 pub fn size(bytes: u64) -> String {
     match bytes {
@@ -358,7 +381,90 @@ impl Store {
         if id == SELF_ID {
             return Err(io::Error::other("Port Store does not remove itself: delete App/PortStore on a computer"));
         }
+        if let Some(rec) = self.card.installed(id) {
+            self.uninstall_hooks(&rec.files);
+        }
         self.card.remove(id, port)
+    }
+
+    /// A port's own cleanup before its files go (for what it changed outside its
+    /// folders): `portstore-uninstall.sh`, or `mixtape-uninstall.sh` as Mixtape names
+    /// it, among its files, run with sh in its folder, with PORTSTORE_UNINSTALL=1,
+    /// MIXTAPE_UNINSTALL=1 and SDCARD set, for 30 seconds at most. However it ends,
+    /// the files go; what it says goes to the log.
+    fn uninstall_hooks(&self, files: &[String]) {
+        for f in files {
+            let name = Path::new(f).file_name().unwrap_or_default();
+            let path = self.card.root.join(f);
+            if !matches!(name.to_str(), Some("portstore-uninstall.sh" | "mixtape-uninstall.sh")) || !path.is_file() {
+                continue;
+            }
+            let child = std::process::Command::new("sh")
+                .arg(&path)
+                .current_dir(path.parent().unwrap_or(&self.card.root))
+                .env("PORTSTORE_UNINSTALL", "1")
+                .env("MIXTAPE_UNINSTALL", "1")
+                .env("SDCARD", &self.card.root)
+                .spawn();
+            let Ok(mut child) = child else {
+                eprintln!("portstore: {f}: could not run it");
+                continue;
+            };
+            let start = std::time::Instant::now();
+            loop {
+                match child.try_wait() {
+                    Ok(Some(status)) => {
+                        if !status.success() {
+                            eprintln!("portstore: {f}: {status}");
+                        }
+                        break;
+                    }
+                    Ok(None) if start.elapsed() > std::time::Duration::from_secs(30) => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        eprintln!("portstore: {f}: stopped after 30 seconds");
+                        break;
+                    }
+                    Ok(None) => std::thread::sleep(std::time::Duration::from_millis(100)),
+                    Err(e) => {
+                        eprintln!("portstore: {f}: {e}");
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Ports of the catalog new on this card since the last look: their ids, and for
+    /// every port the day it was first seen ("" for those there at the very first
+    /// look, which announces nothing). Kept in cache/seen.json.
+    pub fn arrivals(&self, index: &Index) -> (Vec<String>, std::collections::HashMap<String, String>) {
+        let path = self.card.home.join("cache").join("seen.json");
+        let first = !path.exists();
+        let mut seen: std::collections::BTreeMap<String, String> = fs::read_to_string(&path)
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_default();
+        let mut new = Vec::new();
+        if !index.ports.is_empty() {
+            let today = today();
+            for p in index.ports.iter().filter(|p| !p.dev && p.id != SELF_ID) {
+                if !seen.contains_key(&p.id) {
+                    seen.insert(p.id.clone(), if first { String::new() } else { today.clone() });
+                    if !first {
+                        new.push(p.id.clone());
+                    }
+                }
+            }
+            if first || !new.is_empty() {
+                let _ = fs::create_dir_all(path.parent().unwrap());
+                let tmp = path.with_extension("json.new");
+                if serde_json::to_string(&seen).ok().is_some_and(|t| fs::write(&tmp, t).is_ok()) {
+                    let _ = fs::rename(&tmp, &path);
+                }
+            }
+        }
+        (new, seen.into_iter().collect())
     }
 
     /// Where Package Manager keeps Ports Collection, ready to install.

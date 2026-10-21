@@ -1,6 +1,7 @@
 //! portstore            the screens (on the device)
 //! portstore list       the catalog and what is installed
 //! portstore install ID / remove ID / needs ID / refresh
+//! portstore homebrew [refresh | install SLUG | remove SLUG]   Homebrew Hub's list
 //! portstore shots DIR [ID...]   screens as PNGs
 //!
 //! PORTSTORE_CARD is the SD card (/mnt/SDCARD), PORTSTORE_HOME Port Store's folder
@@ -82,6 +83,26 @@ fn main() -> ExitCode {
         Some("refresh") => store.refresh(&cancel).map(|index| {
             println!("catalog {}: {} ports", index.generated, index.ports.len());
         }),
+        Some("homebrew") => match (args.get(1).map(String::as_str), args.get(2)) {
+            (None, _) => {
+                let list = store.load_homebrew();
+                println!("homebrew list {} ({} entries)", list.generated, list.entries.len());
+                for e in &list.entries {
+                    println!("{:32} {:4} {:6} {:>8}  {:?}", e.slug, e.system, e.kind, size(e.file.size), store.homebrew_state(e));
+                }
+                Ok(())
+            }
+            (Some("refresh"), _) => store.refresh_homebrew(&cancel).map(|l| println!("homebrew list {}: {} entries", l.generated, l.entries.len())),
+            (Some("install"), Some(slug)) => (|| {
+                let list = store.load_homebrew();
+                let e = list.entry(slug).ok_or(format!("{slug}: not in the homebrew list"))?;
+                let rec = store.install_homebrew(e, &cancel, &mut |_| {}).map_err(|err| format!("{slug}: {err}"))?;
+                println!("{slug}: installed as {}{}", rec.rom, if rec.art.is_empty() { String::new() } else { format!(", box art {}", rec.art) });
+                Ok(())
+            })(),
+            (Some("remove"), Some(slug)) => store.remove_homebrew(slug).map(|r| println!("{slug}: removed {}", r.rom)).map_err(|e| format!("{slug}: {e}")),
+            _ => Err("homebrew [refresh | install SLUG | remove SLUG]".into()),
+        },
         Some("shots") if args.len() > 1 => portstore::ui::shots(store, &PathBuf::from(&args[1]), &args[2..]),
         Some(other) => Err(format!("unknown command {other}")),
     };

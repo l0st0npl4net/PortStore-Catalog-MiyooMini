@@ -44,6 +44,14 @@ jobs:
           previous="https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}/index.json"
           # The build keeps in .cache only the release files it used.
           python3 index/build.py --out site/index.json --cache .cache --previous "$previous"
+      - name: Build homebrew.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Homebrew Hub's list, each ROM pinned to its database's commit; when Homebrew
+          # Hub cannot be read, the published list is kept.
+          previous="https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}/homebrew.json"
+          python3 index/homebrew.py --out site/homebrew.json --previous "$previous" || true
       - name: Report failing recipes
         continue-on-error: true
         env:

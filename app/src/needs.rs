@@ -298,7 +298,7 @@ pub fn importable(card: &Path, home: &Path, port: &Port, have: &[Have], roms: &m
 
 /// `dir/name` on the card, or `dir/<stem> (2).<ext>`… when another file has that
 /// name: a ROM of another version the user has is never replaced.
-fn free_name(card: &Path, dir: &str, name: &str) -> String {
+pub fn free_name(card: &Path, dir: &str, name: &str) -> String {
     let (stem, ext) = match name.rsplit_once('.') {
         Some((s, e)) => (s.to_string(), format!(".{e}")),
         None => (name.to_string(), String::new()),

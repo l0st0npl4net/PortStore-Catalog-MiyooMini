@@ -77,6 +77,10 @@ pub struct Port {
     /// version of it is an update, as such catalogs number their builds as they like.
     #[serde(default)]
     pub source: String,
+    /// No recipe: its release goes onto the card as it is laid out, checked by the
+    /// catalog's build like any other.
+    #[serde(default)]
+    pub auto: bool,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, Default)]
