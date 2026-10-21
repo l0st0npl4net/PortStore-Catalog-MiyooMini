@@ -7,13 +7,16 @@ test and release it. The [README](../README.md) covers using it and the recipe f
 ## The three parts
 
 ```
-recipes/*.json ──► index/build.py (GitHub Actions, daily) ──► GitHub Pages: index.json + img/
-                                                                   │
-                      authors' GitHub releases ◄── downloads ── Port Store on the Mini (app/)
+recipes/*.json ─────────┐
+recipes/sources/*.json ─┴► index/build.py (GitHub Actions, daily) ──► GitHub Pages: index.json + img/
+ (porters' own catalogs)                                                   │
+     authors' GitHub releases and sites ◄── downloads ── Port Store on the Mini (app/)
 ```
 
 1. **Recipes** (`recipes/`): one JSON file per port, written by hand. Which repository, which
-   release file, what of it goes onto the SD card, what the user has to bring.
+   release file, what of it goes onto the SD card, what the user has to bring. **Sources**
+   (`recipes/sources/`): porters' own catalogs in Mixtape's format, each port of them taken
+   as if it had a recipe.
 2. **The catalog** (`index/build.py`): turns the recipes into `index.json`, with each port's
    newest release file, its SHA-256 and checked layout, and small pictures. Built by GitHub
    Actions and published on GitHub Pages:
@@ -28,6 +31,7 @@ Port Store hosts no ports: only the catalog and its pictures are on GitHub Pages
 | Path | What |
 |---|---|
 | `recipes/miyoo64/`, `recipes/ports/` | recipes; `recipes/portstore.json` is Port Store itself |
+| `recipes/sources/` | porters' own catalogs (Mixtape's format): `slop-kitchen.json`, `slop-kitchen-dev.json` |
 | `index/build.py` | the catalog builder (Python 3, standard library; Pillow for pictures, py7zr for 7z) |
 | `index/report.py` | keeps the "Recipes failing" issue up to date (CI only) |
 | `index/check_recipes.py` | checks and builds given recipes, reports in Markdown (pull requests) |
@@ -36,7 +40,7 @@ Port Store hosts no ports: only the catalog and its pictures are on GitHub Pages
 | `.github/workflows/recipes.yml` | checks the recipes a pull request adds or changes, and comments the result |
 | `app/` | Port Store (Cargo project, Rust 1.96 from `app/rust-toolchain.toml`) |
 | `app/dist/` | files packaged with Port Store: `launch.sh`, OnionOS app `config.json`, the MiyooPorts system |
-| `assets/` | font (DejaVu Sans), Port Store and MiyooPorts icons |
+| `assets/` | fonts (VT323, the terminal's; DejaVu Sans, the classic look's and for what VT323 lacks) with their licenses, Port Store and MiyooPorts icons |
 | `tools/package.sh`, `tools/release.sh` | build Port Store for the Mini, as a card folder or a release zip |
 | `tools/fetch_catalog.py` | puts the published catalog and its pictures into a folder (bundled with a release) |
 | `tools/icon.py`, `tools/crate_licenses.py` | Port Store's icon; the list of Rust crates and licenses |
@@ -109,6 +113,29 @@ only secret is the automatic `GITHUB_TOKEN`.
    MiyooMini-Ports of another type is dropped field by field (`clean_meta`), and its entries
    under `manual` likewise.
 
+### Porters' own catalogs (`recipes/sources/`)
+
+Some porters publish their games from their own site, with a catalog in the format of
+[Mixtape](https://github.com/snyderman3000/mixtape) (another store for OnionOS): `{"name",
+"ports": [{"name", "version", "url", "sha256", "size", "keep", "categories", "status",
+"assets", "porter", "upstream", "image", "notes"}]}`, each `url` a zip laid out for the card's
+root. A source file names one:
+
+```json
+{ "name": "slop.kitchen", "manifest": "https://slop.kitchen/mixtape/manifest.json", "dev": false }
+```
+
+`source_recipes` reads each manifest and makes a recipe of every port: its id is the slug of
+its name (`LAST LIGHT` → `last-light`; an id a recipe or another source has fails), its
+release the catalog's `version` with the day that version was first seen as its date (the
+manifest has none), its file the `url`, checked against `sha256` and `size` like GitHub's
+digest. The rest is a recipe's build: layout with the default `take` (`App/`, `Roms/PORTS/`),
+needs, pictures (the release's own first, else `image`), types. The entry gets `source` (the
+source's `name`): the device then takes any other version as an update, as such catalogs
+number their builds as they like (`dev-g05fca8b`). A source with `"dev": true` puts its ports
+in the index's `dev` list. A source whose manifest cannot be read fails as one recipe (named
+after its file) and keeps all its ports of the previous index.
+
 Whatever a recipe throws (a broken archive, a cut-off download, a wrong field type, an id
 another recipe has too) fails that recipe only, never the build. Members read for shortcuts
 and pictures are refused past 1 MB and 16 MB. A recipe that fails keeps its entry from the previous catalog (`--previous`), so a renamed
@@ -119,7 +146,8 @@ are listed under `manual` (the More tab).
 ### `index.json`
 
 `format` (1; Port Store refuses others), `generated` (UTC time; the newest catalog at hand
-wins), `ports`, `manual`, `failed`, `warnings`. The device reads each entry on its own: one it
+wins), `ports`, `dev` (development builds, in a list of their own so that Port Store before
+1.1 never shows them), `manual`, `failed`, `warnings`. The device reads each entry on its own: one it
 cannot read, or one with a path leading off the card (absolute, `..`, backslash, an `id` that
 is not a plain name), is left out and logged, the rest of the catalog stands. A port:
 
@@ -129,7 +157,8 @@ is not a plain name), is left out and logged, the rest of the catalog stands. A 
 | `thumb`, `cover` | pictures, relative to the catalog's address |
 | `version`, `date` | the release's tag and date |
 | `file` | `url`, `name`, `size`, `sha256`, `kind` (`zip`, `tar`, `tar.gz`, `7z`) |
-| `strip`, `take`, `into`, `map`, `skip`, `keep`, `shortcut` | install rules, as in the recipe |
+| `strip`, `take`, `into`, `map`, `skip`, `keep`, `shortcut` | install rules, as in the recipe; a `keep` rule ending in `/` is a folder's, one with `*` (any characters but `/`) or `?` a pattern, else one file (`index::keeps`, `build.keeps`) |
+| `source` | the porter's catalog it comes from (sources only): any other version is an update |
 | `needs` | what the user brings: `what`, `hint`, `check`, `sha1`, `search`, `n64`, `title` |
 | `install` | `files`, `bytes`, `roots`, `marks` |
 
@@ -141,7 +170,7 @@ reading new catalogs; a change older ones cannot read needs `format` 2.
 `recipes.yml` runs `index/check_recipes.py` on the recipe files a pull request adds or
 changes (renames included): fields (unknown ones, types, paths on the card, `id` unique across
 all recipes, `github`, regular expressions, `needs`, `map`), the `catalog` name, then the same build as the catalog's (release, download, layout, needs,
-pictures). The report goes to the run's summary and as a comment on the pull request
+pictures). A source file is read and each of its ports built the same way. The report goes to the run's summary and as a comment on the pull request
 (edited on later pushes; pull requests from forks may not comment, the summary is there). The
 check fails when a recipe does.
 
@@ -155,6 +184,9 @@ check fails when a recipe does.
    `python3 index/build.py --only <id> --out /tmp/idx/index.json --cache .cache` (`--only`
    needs `--out`, so `site/` never holds a partial catalog).
 4. Try it on a card folder (see "Testing" below), then push: the catalog is rebuilt.
+
+A porter with a catalog of their own in Mixtape's format: add `recipes/sources/<name>.json`
+(above) and check it the same way, `python3 index/check_recipes.py recipes/sources/<name>.json`.
 
 ## Port Store (`app/`)
 
@@ -170,9 +202,11 @@ check fails when a recipe does.
 | `install.rs` | `Card`: placing a port's files, install records, updates, removal, `conform` (bringing installed ports in line with how Port Store installs now) |
 | `miyooports.rs` | the MiyooPorts system: where Ports files are kept hidden, launchers, the system's files |
 | `needs.rs` | what the user brings: files in place (as `~Import ports` finds them), N64 ROMs by SHA-1 in any byte order (cached in `cache/roms.json`); files brought into `import/` and where they go |
-| `ui/mod.rs` | the screens: `App` (state, keys, jobs, drawing), tabs, lists, a port's page, dialogs |
+| `ui/mod.rs` | the screens: `App` (state, keys, jobs, drawing), boot screen, tabs, lists, a port's page, windows (questions, a job's event log, filter, system), the frame loop |
+| `ui/theme.rs` | the look: palettes (phosphor themes and the classic look), effects, the choices kept in `settings.json` (`Look`) |
+| `ui/crt.rs` | the picture tube over the drawn frame: scan lines, glow, rim, afterglow, and its moments (`Fx`) |
 | `ui/fb.rs`, `ui/input.rs` | the framebuffer (640×480, turned half a turn, 2 pages) and the buttons (evdev) |
-| `ui/canvas.rs` | drawing: rectangles, text (fontdue, DejaVu Sans), pictures, PNG output |
+| `ui/canvas.rs` | drawing: rectangles, frames, dashes, text (fontdue: VT323, DejaVu Sans), pictures (as they are, or dithered in the screen's shades), PNG output |
 | `ui/pictures.rs` | pictures: bundled, cached or downloaded on a thread of their own |
 
 No SDL: Port Store draws into a buffer and copies it to the framebuffer, and reads the buttons
@@ -180,6 +214,60 @@ from `/dev/input/event*`. The layout follows the framebuffer's size (640×480 at
 `full_resolution` file next to the program makes OnionOS give apps the panel's own 752×560 on
 the Mini v4 and Flip, and the lists get wider and longer. `PORTSTORE_SHOT_SIZE=752x560` makes
 `shots` draw that size.
+
+### The screen
+
+A terminal on a picture tube: everything is drawn in one phosphor's shades
+(`Palette::phosphor(fg, bg)`: background, panel, faint, dim, glow, highlight) with VT323 (its
+own pixels at 20 px; DejaVu, at 0.8 of the size, for characters VT323 lacks), in windows with a
+title bar (the square, the title, something at the right), keys in brackets, buttons with the
+key in reverse. Themes: green (P1), amber (P3), ice, white (P4), red, and classic (DejaVu,
+Port Store 1.0's colours, no tube); `"theme": "custom"` with `"colors": {"fg": "#rrggbb",
+"bg": "#rrggbb"}` in `settings.json` makes one more. Pictures are dithered (Bayer 4×4) into
+five shades in blocks of 2 (lists) or 3 (pages), or shown in colour when chosen.
+
+- **List:** title bar (what is listed, how many, the time), tabs, the keys' column with the
+  mode box, the list window (pick in a lighter band with a bar and a blinking cursor, tags
+  `[INSTALLED]`, `UPDATE` and `DEV` in reverse), status line (catalog, free space, link).
+- **Port's page:** `SUBJECT:` and the state, the facts line, the cover with rulers and cross
+  hairs (`NO SIGNAL` and static without one), a sheet of facts with dotted leaders, the notes
+  window (what you bring first, then the text, the link, the file), buttons.
+- **Windows:** `Confirm`, messages, a job's `EVENT LOG` (one line per kind of step, `T+mm:ss`,
+  the line of the step running brightest, a progress bar of blocks, a spinner), `FILTER`
+  (Select: all, categories with counts, the development builds), `SYSTEM` (L2: theme,
+  effects, pictures, development builds; Left/Right change, kept at once).
+- **Boot screen:** typed lines (card, catalog, installed, link, display) while the catalog
+  downloads; any key skips it.
+
+Settings in `settings.json`, next to `index`: `theme`, `effects` (`full`, `calm`, `off`),
+`pictures` (`screen`, `color`), `dev` (true/false), `colors`. They are written through a
+temporary file; unknown or broken values fall back to the defaults.
+
+**The tube** (`Crt`, skipped for the classic look and `off`): each frame drawn goes through
+
+1. the afterglow: a pixel's light fades over a few frames (118/256 a frame) instead of going
+   out, so a moved pick leaves a short trail;
+2. the glow: the frame at a quarter size, blurred twice, brought back to full size, added at
+   120/256 and darker towards the rim; made when the frame changes, at most every 90 ms;
+3. scan lines (every other row at 196/256), a rim darker towards the corners, rounded corners;
+4. the moment playing, row by row (which row of the picture, torn by how much, how bright,
+   how washed out): `PowerOn` (a line opening into the picture, too bright, settling),
+   `PowerOff` (the picture folding into a line, the line into a dot: on leaving and before
+   starting a new Port Store), `Tear` (another tab), `Roll` (another page, the sync bar
+   passing), `Degauss` (another theme), `Blip` (a window, a filter, the sort), `Glitch` (now and
+   then while used, with full effects).
+
+With full effects the screen also moves on its own for 40 s after a press: a band of light
+rolling down, the light's flicker, the cursor blinking. Which moment a change gets is
+`fx_between` of two `Sig`s (page, window, tab, filter, sort, theme). `App::since` is when the
+screen last changed, for windows opening (a line growing into the frame) and text typed.
+
+The loop draws only when something changed or moves: the app says when it wants to be drawn
+again (`next_draw`: typing 33 ms, a job's spinner 125 ms, the cursor 530 ms), the tube when its
+next frame is due (`next_frame`: 33 ms while playing or fading, 50 ms for the band), else it
+waits for a key or a job's message (100 ms). Packed-pixel arithmetic keeps a frame cheap: on
+the build machine 4.4 ms with the glow made, 1.6 ms a fading frame, 1 ms a torn one; the ARM
+build under qemu 9.7, 7.5 and 4.6 ms.
 
 ### Threads
 
@@ -200,7 +288,8 @@ download writes a file of its own, so the one on start and a Y never clash.
 ```
 App/PortStore/
   portstore, launch.sh, config.json   the program; OnionOS's Apps entry
-  settings.json                       {"index": "<catalog address>"}
+  settings.json                       {"index": "<catalog address>", "theme", "effects",
+                                      "pictures", "dev", "colors"}
   index.json, img/                    the catalog and pictures it was released with
   cacert.pem, licenses/
   installed/<id>.json                 per port: version, date, SHA-256, every file put on
@@ -267,7 +356,8 @@ Before the game, the launcher checks each `needs` entry with `check` paths and s
 `infoPanel` with what is missing and where it goes. After changes MainUI's list caches
 (`Roms/MiyooPorts/MiyooPorts_cache6.db` and `_cache2.db`) are deleted so the list is read again.
 
-Apps (category `app`) get no launcher and stay in Apps. On start, `Store::repair` runs `conform`
+Apps (category `app`) get no launcher and stay in Apps, unless released as a shortcut for
+Ports (hidden like a game's): then MiyooPorts is the only place they start from. On start, `Store::repair` runs `conform`
 for every installed port: games of Port Store 0.3 move from `Roms/PORTS/Shortcuts` and Apps into
 MiyooPorts, launchers are made or brought up to date (written only when they differ).
 
@@ -281,7 +371,8 @@ MiyooPorts, launchers are made or brought up to date (written only when they dif
   1.2 = 1.2.0), a pre-release (`-rc2`, `beta`) before the bare numbers; when one is date-like
   (2024.05.01) and the other not, or neither has numbers, the release dates; else just being
   another. The same tag with another SHA-256 and a later date (a file uploaded again) is an
-  update too. A catalog behind the device offers nothing.
+  update too. A catalog behind the device offers nothing. A port from a porter's own catalog
+  (`source`) takes any other version as an update.
 - Port Store compares itself by its own version (`CARGO_PKG_VERSION`, numbers only: "0.5.0"
   and "v0.5.0" are one), as it may have come onto the card unzipped, without an install
   record. When the catalog's Port Store is newer it is offered once the list is on screen and
@@ -336,7 +427,14 @@ is used when it is the newest catalog. Files listed and already brought drop off
 - A card in a folder: `PORTSTORE_CARD=/tmp/card PORTSTORE_HOME=/tmp/card/App/PortStore
   target/debug/portstore install <id>` (release files can be placed in `downloads/`;
   `PORTSTORE_CURL`, `PORTSTORE_7Z` replace curl and 7-Zip).
-- Screens as PNGs: `portstore shots DIR [ID…]` (all tabs, a port's page, a dialog).
+- Screens as PNGs, with the tube's light as it settles: `portstore shots DIR [ID…]` (boot
+  screen, all tabs, filter, system, a port's page and its question, a job);
+  `PORTSTORE_SHOT_THEME=amber` for another theme, `PORTSTORE_SHOT_SIZE=752x560` for the
+  larger screen.
+- The tube's moments as one picture (each at six points):
+  `PORTSTORE_FX_SRC=shot.png PORTSTORE_FX_OUT=DIR cargo test --release fx_sheet -- --ignored`;
+  the cost of a frame: `cargo test --release bench_frames -- --ignored --nocapture` (also as
+  the ARM test binary under qemu).
 - The Mini build under qemu:
   `qemu-arm -cpu cortex-a7 -L <toolchain>/arm-linux-gnueabihf/libc App/PortStore/portstore list`.
 
@@ -370,6 +468,9 @@ install record for Port Store.
 ## Open items
 
 - Mini v4 and Mini Flip: checked on screenshots only; needs a try on the devices.
+- The tube's frame times are measured on the build machine and under qemu, not on a Mini yet:
+  if its animations stutter there, `calm` or `off` (L2) are the way out, and the glow
+  (`GLOW_EVERY`) the first thing to make rarer.
 - curl processes still running (the catalog's download on start, a picture) are not stopped
   when Port Store exits; they end by themselves.
 - The number of updates shows once Port Store has run; a check at boot would show it sooner.

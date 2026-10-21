@@ -170,6 +170,8 @@ impl Store {
                 State::Update(rec.version)
             }
             Some(rec) if rec.version == port.version => State::Installed(rec.version),
+            // Another's catalog numbers its builds as it likes: another one is newer.
+            Some(rec) if !port.source.is_empty() => State::Update(rec.version),
             // Newer than the catalog's (a Port Store ahead of its catalog): no update.
             Some(rec) if !newer(&port.version, &port.date, &rec.version, &rec.date) => {
                 State::Installed(rec.version)

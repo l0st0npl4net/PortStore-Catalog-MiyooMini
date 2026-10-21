@@ -1,0 +1,5 @@
+{
+  "name": "slop.kitchen",
+  "manifest": "https://slop.kitchen/mixtape/dev/manifest.json",
+  "dev": true
+}

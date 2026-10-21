@@ -70,6 +70,13 @@ pub struct Port {
     #[serde(default)]
     pub needs: Vec<Need>,
     pub install: Install,
+    /// A development build (the catalog's "dev" list): listed only when asked for.
+    #[serde(default)]
+    pub dev: bool,
+    /// The catalog the port comes from when it is another's (slop.kitchen): any other
+    /// version of it is an update, as such catalogs number their builds as they like.
+    #[serde(default)]
+    pub source: String,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, Default)]
@@ -162,6 +169,9 @@ struct Raw {
     ports: Vec<serde_json::Value>,
     #[serde(default)]
     manual: Vec<serde_json::Value>,
+    /// Development builds, apart: Port Store before 1.1 does not read them.
+    #[serde(default)]
+    dev: Vec<serde_json::Value>,
 }
 
 impl Index {
@@ -176,13 +186,16 @@ impl Index {
                 raw.format
             ));
         }
+        let dev = raw.dev.into_iter().map(|v| (v, true));
         let ports = raw
             .ports
             .into_iter()
-            .filter_map(|v| {
+            .map(|v| (v, false))
+            .chain(dev)
+            .filter_map(|(v, dev)| {
                 let id = v.get("id").and_then(|i| i.as_str()).unwrap_or("?").to_string();
                 match serde_json::from_value::<Port>(v) {
-                    Ok(p) if p.sound() => Some(p),
+                    Ok(p) if p.sound() => Some(Port { dev: dev || p.dev, ..p }),
                     Ok(_) => {
                         eprintln!("portstore: catalog: {id}: a path off the card, left out");
                         None
@@ -210,6 +223,29 @@ pub fn card_path(path: &str) -> bool {
         && !path.contains('\\')
         && !path.contains('\0')
         && !path.split('/').any(|part| part == ".." || part == ".")
+}
+
+/// Whether the keep rule `rule` covers `path`: a folder's when it ends in '/', a
+/// pattern when it has '*' (any characters but '/') or '?' (one), else that file.
+pub fn keeps(rule: &str, path: &str) -> bool {
+    if rule.ends_with('/') {
+        return path.starts_with(rule);
+    }
+    if !rule.contains(['*', '?']) {
+        return path == rule;
+    }
+    fn matches(rule: &[char], path: &[char]) -> bool {
+        match rule.split_first() {
+            None => path.is_empty(),
+            Some(('*', rest)) => (0..=path.len())
+                .take_while(|&n| n == 0 || path[n - 1] != '/')
+                .any(|n| matches(rest, &path[n..])),
+            Some(('?', rest)) => path.first().is_some_and(|&c| c != '/') && matches(rest, &path[1..]),
+            Some((c, rest)) => path.first() == Some(c) && matches(rest, &path[1..]),
+        }
+    }
+    let (rule, path): (Vec<char>, Vec<char>) = (rule.chars().collect(), path.chars().collect());
+    matches(&rule, &path)
 }
 
 impl Port {
@@ -247,10 +283,7 @@ impl Port {
 
     /// Whether `path` (from the card's root) is the user's.
     pub fn kept(&self, path: &str) -> bool {
-        self.keep.iter().any(|k| match k.ends_with('/') {
-            true => path.starts_with(k.as_str()),
-            false => path == k,
-        })
+        self.keep.iter().any(|k| keeps(k, path))
     }
 
     pub fn text(&self) -> &str {

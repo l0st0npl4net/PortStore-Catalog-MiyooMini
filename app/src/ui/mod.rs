@@ -1,46 +1,64 @@
-//! Port Store's screens: the catalog in tabs, a port's page, jobs with their progress.
+//! Port Store's screens, as a terminal on a picture tube: the catalog in tabs, a
+//! port's page, windows for questions and jobs (with their event log), the filter and
+//! the system's settings.
 pub mod canvas;
+pub mod crt;
 pub mod fb;
 pub mod input;
 pub mod pictures;
+pub mod theme;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::index::{Index, Port};
 use crate::install::{free_bytes, Step};
 use crate::needs::{self, Have, Roms};
 use crate::{size, State, Store};
 use canvas::Canvas;
+use crt::{Crt, Fx};
 use input::Key;
-use pictures::Pictures;
+use pictures::{Image, Pictures};
+use theme::{Effects, Look, Palette};
 
 /// The screen Port Store is laid out for at least: the Mini's. Larger ones (the
 /// Mini v4 and Flip, 752x560) get the same layout, wider and with more rows.
 pub const W: usize = 640;
 pub const H: usize = 480;
 
-const BG: u32 = 0x15171c;
-const PANEL: u32 = 0x22262f;
-const PICK: u32 = 0x2f3644;
-const TEXT: u32 = 0xeceef2;
-const DIM: u32 = 0x8d95a3;
-const ACCENT: u32 = 0x4fa3ff;
-const GOOD: u32 = 0x5cc98a;
-const WARN: u32 = 0xf0a64a;
-const BAD: u32 = 0xef6b6b;
-
-const TOP: i32 = 56;
+/// The screen's edge, round everything.
+const EDGE: i32 = 6;
+/// The title bar, and the tabs (or a page's facts) under it.
+const BAR: i32 = 28;
+const TOP: i32 = EDGE + 2 * BAR + 6;
+/// The bottom bar: the status line, or a page's buttons.
+const FOOT: i32 = 30;
+/// The column of keys beside the list.
+const KEYS_W: i32 = 148;
 /// A port's row, and a group's heading above its ports.
-const ROW: i32 = 54;
-const HEADING: i32 = 30;
+const ROW: i32 = 56;
+const HEADING: i32 = 28;
 const END: i32 = 12;
 /// How many ports Left / Right move by.
 const PAGE: usize = 6;
 const THUMB: i32 = 46;
+
+/// Text sizes: VT323 draws its own pixels at 20.
+const SMALL: u16 = 20;
+const BODY: u16 = 24;
+const NAME: u16 = 30;
+const BIG: u16 = 40;
+
+/// The boot screen's length, in seconds.
+const BOOT: f32 = 2.2;
+/// A window opening: its frame (seconds), then its text typed (characters a second).
+const OPEN: f32 = 0.14;
+const TYPE: f32 = 900.0;
+/// How long the cursor blinks after a press.
+const AWAKE: Duration = Duration::from_secs(40);
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tab {
@@ -52,11 +70,11 @@ pub enum Tab {
 }
 
 const TABS: [(Tab, &str); 5] = [
-    (Tab::Games, "Games"),
-    (Tab::Apps, "Apps"),
-    (Tab::Installed, "Installed"),
-    (Tab::Updates, "Updates"),
-    (Tab::More, "More"),
+    (Tab::Games, "GAMES"),
+    (Tab::Apps, "APPS"),
+    (Tab::Installed, "INSTALLED"),
+    (Tab::Updates, "UPDATES"),
+    (Tab::More, "MORE"),
 ];
 
 /// A row of the list: a group's heading (Miyoo64 (N64)), a port, an entry to install
@@ -84,6 +102,25 @@ impl Item {
     }
 }
 
+/// A row of the filter's window.
+#[derive(Clone, Debug, PartialEq)]
+enum Choice {
+    All(usize),
+    Category(String, usize),
+    /// The line before the channels.
+    Line,
+    Dev(usize),
+}
+
+impl Choice {
+    fn pickable(&self) -> bool {
+        !matches!(self, Choice::Line)
+    }
+}
+
+/// The rows of the system's window.
+const SYSTEM: [&str; 4] = ["THEME", "EFFECTS", "PICTURES", "DEV BUILDS"];
+
 #[derive(Clone, Debug)]
 enum Action {
     Install(String),
@@ -104,6 +141,32 @@ enum View {
     /// A job on screen: whether B can stop it (downloads and checks only).
     Busy { title: String, step: Option<Step>, stoppable: bool },
     Message { title: String, text: String },
+    /// Select's window over the list: a category, the development builds.
+    Filter { at: usize },
+    /// L2's window: the theme, the tube's effects, pictures, development builds.
+    System { at: usize },
+}
+
+impl View {
+    /// A window over a page (as against a page).
+    fn over(&self) -> u8 {
+        match self {
+            View::List | View::Details { .. } | View::Manual { .. } => 0,
+            View::Confirm { .. } => 1,
+            View::Busy { .. } => 2,
+            View::Message { .. } => 3,
+            View::Filter { .. } => 4,
+            View::System { .. } => 5,
+        }
+    }
+
+    fn page(&self) -> u8 {
+        match self {
+            View::Details { .. } => 1,
+            View::Manual { .. } => 2,
+            _ => 0,
+        }
+    }
 }
 
 enum Msg {
@@ -135,6 +198,33 @@ pub enum Flow {
     Exit,
 }
 
+/// What the screen shows, in short: a change of it is played on the tube.
+#[derive(Clone, Debug, PartialEq)]
+struct Sig {
+    page: u8,
+    over: u8,
+    tab: Tab,
+    filter: Option<String>,
+    newest: bool,
+    theme: String,
+    dev: bool,
+}
+
+/// The tube's moment for a change of screen.
+fn fx_between(a: &Sig, b: &Sig) -> Option<Fx> {
+    if a.theme != b.theme {
+        Some(Fx::Degauss)
+    } else if a.page != b.page {
+        Some(Fx::Roll)
+    } else if a.tab != b.tab {
+        Some(Fx::Tear)
+    } else if a.over != b.over || a.filter != b.filter || a.newest != b.newest || a.dev != b.dev {
+        Some(Fx::Blip)
+    } else {
+        None
+    }
+}
+
 pub struct App {
     store: Arc<Store>,
     index: Index,
@@ -146,8 +236,8 @@ pub struct App {
     checking: Option<String>,
     free: Option<u64>,
     tab: Tab,
-    /// Games of one category only (Select goes through them).
-    genre: Option<String>,
+    /// Per tab: ports of one category only (Games and Apps; Select's window).
+    filter: [Option<String>; 5],
     /// Per tab: the row picked and the first row on show, by place in `items()`.
     pick: [usize; 5],
     top: [usize; 5],
@@ -158,6 +248,8 @@ pub struct App {
     newest: bool,
     /// The catalog could not be downloaded on start (no Wi-Fi).
     offline: bool,
+    /// A catalog has been downloaded since Port Store started.
+    online: bool,
     /// Port Store has updated itself: start the new one on leaving.
     pub restart: bool,
     /// A catalog downloaded while a job ran, taken in after it.
@@ -175,13 +267,29 @@ pub struct App {
     busy: bool,
     cancel: Arc<AtomicBool>,
     pub dirty: bool,
+    look: Look,
+    /// The time the screen is drawn for, and since when it shows what it shows (for
+    /// windows opening and text being typed).
+    now: Instant,
+    since: Instant,
+    /// Everything as when done moving (screens taken off the device, tests).
+    still: bool,
+    /// When Port Store started: the boot screen, until it is done or a key is pressed.
+    boot: Option<Instant>,
+    last_key: Instant,
+    drawn_at: Instant,
+    /// A job's event log: (seconds into the job, kind of step, line).
+    log: Vec<(u64, u32, String)>,
+    log_at: Instant,
 }
 
 impl App {
     pub fn new(store: Store) -> App {
         let index = store.load_index();
         store.repair(&index);
+        let look = Look::load(&store.card.home);
         let store = Arc::new(store);
+        let now = Instant::now();
         let mut app = App {
             pictures: Pictures::new(store.clone()),
             store,
@@ -192,10 +300,11 @@ impl App {
             checking: None,
             free: None,
             tab: Tab::Games,
-            genre: None,
+            filter: Default::default(),
             marked: Default::default(),
             newest: false,
             offline: false,
+            online: false,
             restart: false,
             held_index: None,
             offer_pending: false,
@@ -209,6 +318,15 @@ impl App {
             busy: false,
             cancel: Arc::new(AtomicBool::new(false)),
             dirty: true,
+            look,
+            now,
+            since: now,
+            still: false,
+            boot: None,
+            last_key: now,
+            drawn_at: now,
+            log: Vec::new(),
+            log_at: now,
         };
         app.recount();
         app
@@ -235,21 +353,42 @@ impl App {
         TABS.iter().position(|(t, _)| *t == self.tab).unwrap_or(0)
     }
 
+    /// Ports of the tab, before its filter: games or apps, development builds only
+    /// when asked for.
+    fn of_tab(&self, tab: Tab) -> impl Iterator<Item = (usize, &Port)> + '_ {
+        let dev = self.look.dev;
+        self.index.ports.iter().enumerate().filter(move |(_, p)| {
+            (dev || !p.dev)
+                && match tab {
+                    Tab::Games => !p.is_app(),
+                    Tab::Apps => p.is_app(),
+                    _ => false,
+                }
+        })
+    }
+
     /// The rows of the tab on show. Games and apps are in alphabetical order, the
     /// ports of a group (a collection, one porter's games) together under its heading,
     /// in the place of the group's name.
     fn items(&self) -> Vec<Item> {
-        let ports = self.index.ports.iter().enumerate();
+        let filter = &self.filter[self.tab_at()];
         let mut shown: Vec<(usize, &Port)> = match self.tab {
-            Tab::Games => ports
-                .filter(|(_, p)| !p.is_app())
-                .filter(|(_, p)| self.genre.as_ref().is_none_or(|g| p.categories.contains(g)))
+            Tab::Games | Tab::Apps => self
+                .of_tab(self.tab)
+                .filter(|(_, p)| filter.as_ref().is_none_or(|g| p.categories.contains(g)))
                 .collect(),
-            Tab::Apps => ports.filter(|(_, p)| p.is_app()).collect(),
-            Tab::Installed => ports
+            Tab::Installed => self
+                .index
+                .ports
+                .iter()
+                .enumerate()
                 .filter(|(_, p)| matches!(self.state(&p.id), State::Installed(_) | State::Update(_)))
                 .collect(),
-            Tab::Updates => ports
+            Tab::Updates => self
+                .index
+                .ports
+                .iter()
+                .enumerate()
                 .filter(|(_, p)| matches!(self.state(&p.id), State::Update(_)))
                 .collect(),
             Tab::More => return (0..self.index.manual.len()).map(Item::Manual).collect(),
@@ -282,18 +421,24 @@ impl App {
         out
     }
 
-    /// The categories of games, for Select to go through.
-    fn genres(&self) -> Vec<String> {
-        let mut all: Vec<String> = self
-            .index
-            .ports
-            .iter()
-            .filter(|p| !p.is_app())
-            .flat_map(|p| p.categories.iter().cloned())
-            .collect();
-        all.sort();
-        all.dedup();
-        all
+    /// Select's window for the tab: all, each category with how many it has, and the
+    /// development builds when the catalog has any for it.
+    fn choices(&self) -> Vec<Choice> {
+        let dev_count = self.index.ports.iter().filter(|p| p.dev && p.is_app() == (self.tab == Tab::Apps)).count();
+        let shown: Vec<&Port> = self.of_tab(self.tab).map(|(_, p)| p).collect();
+        let mut counts: std::collections::BTreeMap<&str, usize> = Default::default();
+        for p in &shown {
+            for c in p.categories.iter().filter(|c| *c != "app") {
+                *counts.entry(c.as_str()).or_default() += 1;
+            }
+        }
+        let mut out = vec![Choice::All(shown.len())];
+        out.extend(counts.into_iter().map(|(c, n)| Choice::Category(c.to_string(), n)));
+        if dev_count > 0 {
+            out.push(Choice::Line);
+            out.push(Choice::Dev(dev_count));
+        }
+        out
     }
 
     /// The pick on a port (not a heading), from `at` on in the direction `step`.
@@ -317,10 +462,81 @@ impl App {
         self.index.port(id)
     }
 
+    /// The look in force: settings.json's, the theme the palette.
+    pub fn palette(&self) -> Palette {
+        self.look.palette()
+    }
+
+    /// How much of a picture tube is played (none for the classic look).
+    pub fn effects(&self) -> Effects {
+        match self.palette().mono {
+            true => self.look.effects,
+            false => Effects::Off,
+        }
+    }
+
+    fn sig(&self) -> Sig {
+        let base = match self.view.over() {
+            0 => &self.view,
+            _ => self.under.iter().rev().find(|v| v.over() == 0).unwrap_or(&View::List),
+        };
+        Sig {
+            page: base.page(),
+            over: self.view.over(),
+            tab: self.tab,
+            filter: self.filter[self.tab_at()].clone(),
+            newest: self.newest,
+            theme: self.look.theme.clone(),
+            dev: self.look.dev,
+        }
+    }
+
+    /// Seconds the screen has shown what it shows.
+    fn age(&self) -> f32 {
+        match self.still {
+            true => 1e6,
+            false => self.now.saturating_duration_since(self.since).as_secs_f32(),
+        }
+    }
+
+    fn booting(&self) -> bool {
+        self.boot.is_some_and(|at| self.now.saturating_duration_since(at).as_secs_f32() < BOOT)
+    }
+
+    /// Whether the cursor blinks: the full effects, and a press not long ago.
+    fn blinking(&self) -> bool {
+        !self.still && self.effects() == Effects::Full && self.now.saturating_duration_since(self.last_key) < AWAKE
+    }
+
+    /// When the screen is to be drawn again without anything new: text being typed,
+    /// a window opening, the spinner of a job, the cursor.
+    fn next_draw(&self) -> Option<Duration> {
+        if self.still {
+            return None;
+        }
+        let over = self.view.over();
+        // A window opening (a job's for its frame only, then its spinner).
+        let opening = if over == 2 { OPEN * 2.0 } else { 1.2 };
+        if self.booting() || (over != 0 && self.age() < opening) {
+            Some(Duration::from_millis(33))
+        } else if over == 2 {
+            Some(Duration::from_millis(125))
+        } else if self.blinking() {
+            Some(Duration::from_millis(530))
+        } else {
+            None
+        }
+    }
+
     // ---- input ----
 
     pub fn key(&mut self, key: Key) -> Flow {
         self.dirty = true;
+        self.last_key = self.now;
+        if self.booting() {
+            self.boot = None;
+            return Flow::Stay;
+        }
         match self.view.clone() {
             View::List => return self.list_key(key),
             View::Details { id, scroll } => self.details_key(key, id, scroll),
@@ -349,6 +565,8 @@ impl App {
                     self.back();
                 }
             }
+            View::Filter { at } => self.filter_key(key, at),
+            View::System { at } => self.system_key(key, at),
         }
         Flow::Stay
     }
@@ -384,16 +602,16 @@ impl App {
             Key::Right if n > 0 => self.pick[t] = page(1),
             Key::L1 => self.tab = TABS[(t + TABS.len() - 1) % TABS.len()].0,
             Key::R1 => self.tab = TABS[(t + 1) % TABS.len()].0,
-            Key::Select if self.tab == Tab::Games => {
-                let genres = self.genres();
-                let at = self.genre.as_ref().and_then(|g| genres.iter().position(|x| x == g));
-                self.genre = match at {
-                    None => genres.first().cloned(),
-                    Some(i) => genres.get(i + 1).cloned(),
+            Key::Select if matches!(self.tab, Tab::Games | Tab::Apps) => {
+                // The window opens on the filter in force.
+                let choices = self.choices();
+                let at = match &self.filter[t] {
+                    Some(g) => choices.iter().position(|c| matches!(c, Choice::Category(x, _) if x == g)),
+                    None => None,
                 };
-                self.pick[t] = 0;
-                self.top[t] = 0;
+                self.view = View::Filter { at: at.unwrap_or(0) };
             }
+            Key::L2 => self.view = View::System { at: 0 },
             Key::Y => self.start(Action::Refresh),
             Key::R2 if self.tab != Tab::More => {
                 self.newest = !self.newest;
@@ -443,6 +661,81 @@ impl App {
             _ => {}
         }
         Flow::Stay
+    }
+
+    fn filter_key(&mut self, key: Key, at: usize) {
+        let choices = self.choices();
+        let n = choices.len();
+        let step = |by: usize| {
+            let mut i = at;
+            for _ in 0..n {
+                i = (i + by) % n;
+                if choices[i].pickable() {
+                    break;
+                }
+            }
+            i
+        };
+        let t = self.tab_at();
+        match key {
+            Key::Up => self.view = View::Filter { at: step(n - 1) },
+            Key::Down => self.view = View::Filter { at: step(1) },
+            Key::A => match choices.get(at) {
+                Some(Choice::All(_)) => self.set_filter(t, None),
+                Some(Choice::Category(c, _)) => self.set_filter(t, Some(c.clone())),
+                Some(Choice::Dev(_)) => {
+                    self.look.dev = !self.look.dev;
+                    self.save_look();
+                }
+                _ => {}
+            },
+            Key::B | Key::Select => self.view = View::List,
+            _ => {}
+        }
+    }
+
+    fn set_filter(&mut self, t: usize, filter: Option<String>) {
+        self.filter[t] = filter;
+        self.pick[t] = 0;
+        self.top[t] = 0;
+        self.view = View::List;
+    }
+
+    fn system_key(&mut self, key: Key, at: usize) {
+        let n = SYSTEM.len();
+        match key {
+            Key::Up => self.view = View::System { at: (at + n - 1) % n },
+            Key::Down => self.view = View::System { at: (at + 1) % n },
+            Key::Left => self.change(at, -1),
+            Key::Right | Key::A => self.change(at, 1),
+            Key::B | Key::L2 | Key::Select => self.view = View::List,
+            _ => {}
+        }
+    }
+
+    /// The system's setting `row` one step on (or back), kept in settings.json.
+    fn change(&mut self, row: usize, by: i32) {
+        let turn = |n: usize, at: usize| (at as i32 + by).rem_euclid(n as i32) as usize;
+        match row {
+            0 => {
+                let themes = self.look.themes();
+                let at = themes.iter().position(|t| *t == self.look.theme).unwrap_or(0);
+                self.look.theme = themes[turn(themes.len(), at)].to_string();
+            }
+            1 => {
+                let at = theme::EFFECTS.iter().position(|(e, ..)| *e == self.look.effects).unwrap_or(0);
+                self.look.effects = theme::EFFECTS[turn(theme::EFFECTS.len(), at)].0;
+            }
+            2 => self.look.color_pictures = !self.look.color_pictures,
+            _ => self.look.dev = !self.look.dev,
+        }
+        self.save_look();
+    }
+
+    fn save_look(&self) {
+        if let Err(e) = self.look.save(&self.store.card.home) {
+            eprintln!("portstore: settings.json: {e}");
+        }
     }
 
     fn open(&mut self, id: String) {
@@ -553,12 +846,13 @@ impl App {
         let store = self.store.clone();
         let tx = self.jobs.0.clone();
         let cancel = self.cancel.clone();
-        let title = match &action {
-            Action::Install(id) => format!("Installing {}", self.port(id).map_or(id.as_str(), |p| &p.name)),
-            Action::Remove(id) => format!("Removing {}", self.port(id).map_or(id.as_str(), |p| &p.name)),
-            Action::Refresh => "Downloading the catalog".to_string(),
-            Action::InstallMany(ids) => format!("Installing {} ports", ids.len()),
-            Action::Place(_) => "Putting your files in place".to_string(),
+        let name = |id: &str| self.port(id).map_or(id.to_string(), |p| p.name.clone());
+        let (title, first) = match &action {
+            Action::Install(id) => (format!("Installing {}", name(id)), "LINK OPEN".to_string()),
+            Action::Remove(id) => (format!("Removing {}", name(id)), "REMOVE FILES".to_string()),
+            Action::Refresh => ("Downloading the catalog".to_string(), "FETCH INDEX.JSON".to_string()),
+            Action::InstallMany(ids) => (format!("Installing {} ports", ids.len()), format!("QUEUE OF {}", ids.len())),
+            Action::Place(_) => ("Putting your files in place".to_string(), "MOVE YOUR FILES".to_string()),
         };
         if matches!(self.view, View::Confirm { .. }) {
             self.view = self.under.pop().unwrap_or(View::List);
@@ -566,6 +860,9 @@ impl App {
         self.under.push(self.view.clone());
         let stoppable = matches!(action, Action::Install(_) | Action::InstallMany(_) | Action::Refresh);
         self.view = View::Busy { title, step: None, stoppable };
+        self.log.clear();
+        self.log_at = self.now;
+        self.note(0, first);
         let port = match &action {
             Action::Install(id) | Action::Remove(id) => self.port(id).cloned(),
             Action::Refresh | Action::InstallMany(_) | Action::Place(_) => None,
@@ -591,6 +888,16 @@ impl App {
                 let _ = ended.send(Msg::Done(Err("Port Store ran into an error it did not expect: see cache/portstore.log".into())));
             }
         });
+    }
+
+    /// A line of the job's event log; a step of the same kind as the last line takes
+    /// its place (a download's progress).
+    fn note(&mut self, kind: u32, text: String) {
+        let secs = self.now.saturating_duration_since(self.log_at).as_secs();
+        match self.log.last_mut() {
+            Some(last) if last.1 == kind => *last = (last.0, kind, text),
+            _ => self.log.push((secs, kind, text)),
+        }
     }
 }
 
@@ -650,7 +957,7 @@ impl App {
         if self.pictures.pump() {
             self.dirty = true;
         }
-        if self.offer_pending && matches!(self.view, View::List) && !self.busy {
+        if self.offer_pending && matches!(self.view, View::List) && !self.busy && !self.booting() {
             self.offer_self_update();
             self.dirty = true;
         }
@@ -658,12 +965,15 @@ impl App {
             self.dirty = true;
             match msg {
                 Msg::Step(s) => {
+                    let (kind, line, _) = step_line(Some(&s));
+                    self.note(kind, line);
                     if let View::Busy { step, .. } = &mut self.view {
                         *step = Some(s);
                     }
                 }
                 Msg::Checking(name) => self.checking = Some(name),
                 Msg::Queue(n, of, name) => {
+                    self.note(100 + n as u32, format!("PORT {n}/{of}: {}", name.to_uppercase()));
                     if let View::Busy { title, step, .. } = &mut self.view {
                         *title = format!("Installing {n} of {of}: {name}");
                         *step = None;
@@ -694,6 +1004,7 @@ impl App {
                     match result {
                         Ok(index) => {
                             self.offline = false;
+                            self.online = true;
                             self.store.repair(&index);
                             self.index = index;
                             self.recount();
@@ -734,6 +1045,7 @@ impl App {
     /// A catalog downloaded quietly, taken in.
     fn take_index(&mut self, index: Index) {
         self.offline = false;
+        self.online = true;
         self.store.repair(&index);
         self.index = index;
         self.recount();
@@ -827,75 +1139,181 @@ impl App {
         self.index.generated.get(..10).unwrap_or("?").to_string()
     }
 
+    /// The catalog's link, as the screen says it.
+    fn link(&self) -> &'static str {
+        if self.store.index_url.is_empty() {
+            "NONE"
+        } else if self.online {
+            "ONLINE"
+        } else if self.offline {
+            "OFFLINE"
+        } else {
+            "DIALING"
+        }
+    }
+
+    fn updates(&self) -> usize {
+        self.states.values().filter(|s| matches!(s, State::Update(_))).count()
+    }
+
     // ---- drawing ----
 
     pub fn draw(&mut self, c: &mut Canvas) {
-        c.clear(BG);
+        let p = self.palette();
+        c.mono = p.mono;
+        c.clear(p.bg);
+        if self.booting() && matches!(self.view, View::List) {
+            return self.draw_boot(c, &p);
+        }
         match self.view.clone() {
-            View::List => self.draw_list(c),
-            View::Details { id, scroll } => self.draw_details(c, &id, scroll),
-            View::Manual { at, scroll } => self.draw_manual(c, at, scroll),
+            View::List => self.draw_list(c, &p),
+            View::Details { id, scroll } => self.draw_details(c, &p, &id, scroll),
+            View::Manual { at, scroll } => self.draw_manual(c, &p, at, scroll),
             View::Confirm { text, .. } => {
-                self.draw_under(c);
-                dialog(c, "Are you sure?", &text, None, "A  Yes      B  No");
+                self.draw_under(c, &p);
+                self.dialog(c, &p, "Confirm", &text, &[("A", "YES"), ("B", "NO")]);
             }
             View::Busy { title, step, stoppable } => {
-                self.draw_under(c);
-                let (text, bar) = step_text(step.as_ref());
+                self.draw_under(c, &p);
                 let stoppable = stoppable && matches!(step, None | Some(Step::Download { .. }) | Some(Step::Check));
-                dialog(c, &title, &text, bar, if stoppable { "B  Cancel" } else { "" });
+                self.draw_busy(c, &p, &title, step.as_ref(), stoppable);
             }
             View::Message { title, text } => {
-                self.draw_under(c);
-                dialog(c, &title, &text, None, "A  OK");
+                self.draw_under(c, &p);
+                self.dialog(c, &p, &title, &text, &[("A", "OK")]);
+            }
+            View::Filter { at } => {
+                self.draw_list(c, &p);
+                c.shade(0, 0, c.w as i32, c.h as i32, p.bg, 150);
+                self.draw_filter(c, &p, at);
+            }
+            View::System { at } => {
+                self.draw_list(c, &p);
+                c.shade(0, 0, c.w as i32, c.h as i32, p.bg, 150);
+                self.draw_system(c, &p, at);
             }
         }
     }
 
-    fn draw_under(&mut self, c: &mut Canvas) {
+    fn draw_under(&mut self, c: &mut Canvas, p: &Palette) {
         let saved = std::mem::replace(&mut self.view, View::List);
         if let Some(under) = self.under.last().cloned() {
             self.view = under;
-            if !matches!(self.view, View::Confirm { .. } | View::Busy { .. } | View::Message { .. }) {
+            if self.view.over() == 0 {
                 self.draw(c);
             }
         } else {
-            self.draw_list(c);
+            self.draw_list(c, p);
         }
         self.view = saved;
-        // Dim what is under the dialog.
-        for p in c.px.iter_mut() {
-            *p = canvas::mix(*p, 0x000000, 150);
-        }
+        // Dim what is under the window.
+        c.shade(0, 0, c.w as i32, c.h as i32, p.bg, 170);
     }
 
-    fn draw_list(&mut self, c: &mut Canvas) {
-        c.fill(0, 0, c.w as i32, TOP - 8, PANEL);
-        c.text(20, 12, 24, TEXT, "Port Store");
-        let mut x = c.w as i32 - 12;
-        for (tab, name) in TABS.iter().rev() {
+    /// The boot screen: Port Store's name, then what it finds, typed.
+    fn draw_boot(&mut self, c: &mut Canvas, p: &Palette) {
+        let age = self.boot.map_or(BOOT, |at| self.now.saturating_duration_since(at).as_secs_f32());
+        let installed = self.states.values().filter(|s| matches!(s, State::Installed(_) | State::Update(_))).count();
+        let lines = [
+            format!("PORT STORE V{}", env!("CARGO_PKG_VERSION")),
+            String::new(),
+            format!("CARD ............ {}", self.free.map_or("?".into(), |f| format!("{} FREE", size(f)))),
+            format!("CATALOG ......... {} / {} PORTS", self.index_date(), self.index.ports.len()),
+            format!("INSTALLED ....... {installed} / {} UPDATES", self.updates()),
+            format!("LINK ............ {}", self.link()),
+            format!("DISPLAY ......... {}", self.look.theme_name()),
+            String::new(),
+            "READY.".to_string(),
+        ];
+        let mut left = ((age - 0.35).max(0.0) * 160.0) as usize;
+        let (x, mut y) = (40, 60);
+        let mut cursor = (x, y);
+        for (n, line) in lines.iter().enumerate() {
+            let px = if n == 0 { BIG } else { BODY };
+            let shown: String = line.chars().take(left).collect();
+            left = left.saturating_sub(line.chars().count() + 1);
+            let w = c.text(x, y, px, if n == 0 { p.hi } else { p.fg }, &shown);
+            if !shown.is_empty() || n == 0 {
+                cursor = (x + w + 2, y);
+            }
+            if n == 0 {
+                c.fill(x, y + px as i32 + 4, c.w as i32 - 2 * x, 2, p.dim);
+            }
+            y += px as i32 + if n == 0 { 18 } else { 6 };
+            if left == 0 {
+                break;
+            }
+        }
+        if ((age * 2.0) as u32).is_multiple_of(2) {
+            c.fill(cursor.0, cursor.1 + 2, 10, BODY as i32 - 4, p.fg);
+        }
+        c.text(x, c.h as i32 - 44, SMALL, p.dim, "ANY KEY TO SKIP");
+    }
+
+    /// The frame every page has: the screen's edge and the title bar. The space
+    /// under it starts at EDGE + BAR.
+    fn chrome(&mut self, c: &mut Canvas, p: &Palette, title: &str, right: &str) {
+        let (w, h) = (c.w as i32, c.h as i32);
+        c.frame(EDGE, EDGE, w - 2 * EDGE, h - 2 * EDGE, 2, p.dim);
+        c.fill(EDGE, EDGE, w - 2 * EDGE, BAR, p.panel);
+        c.fill(EDGE, EDGE + BAR - 2, w - 2 * EDGE, 2, p.dim);
+        icon(c, p, EDGE + 7, EDGE + 7);
+        let rw = c.text_right(w - EDGE - 10, EDGE + 4, SMALL, p.dim, right);
+        let title = c.fit(SMALL, title, w - 2 * EDGE - 50 - rw);
+        c.text(EDGE + 30, EDGE + 4, SMALL, p.fg, &title);
+    }
+
+    fn foot(c: &Canvas) -> i32 {
+        c.h as i32 - EDGE - FOOT
+    }
+
+    /// The list window: its top, and the height its rows have.
+    fn list_area(c: &Canvas) -> (i32, i32) {
+        let top = TOP + BAR;
+        (top, App::foot(c) - 8 - top)
+    }
+
+    fn draw_list(&mut self, c: &mut Canvas, p: &Palette) {
+        let w = c.w as i32;
+        let t = self.tab_at();
+        let items = self.items();
+        let filter = self.filter[t].clone();
+        let what = match (self.tab, &filter) {
+            (Tab::Games | Tab::Apps, Some(f)) => format!("{} : {}", TABS[t].1, f.to_uppercase()),
+            (Tab::Games | Tab::Apps, None) => format!("{} : ALL", TABS[t].1),
+            _ => TABS[t].1.to_string(),
+        };
+        let ports = items.iter().filter(|i| i.pickable()).count();
+        self.chrome(c, p, &format!("PORT STORE \\\\ {what} \\\\ {ports} ENTRIES"), &clock());
+
+        // The tabs, the one on show in reverse.
+        let ty = EDGE + BAR + 2;
+        c.text(EDGE + 10, ty + 2, SMALL, p.faint, "L1");
+        c.text_right(w - EDGE - 10, ty + 2, SMALL, p.faint, "R1");
+        let mut x = EDGE + 40;
+        for (tab, name) in TABS {
             let label = match tab {
-                Tab::Updates => {
-                    let n = self.states.values().filter(|s| matches!(s, State::Update(_))).count();
-                    if n > 0 { format!("{name} {n}") } else { name.to_string() }
-                }
-                Tab::Games => match &self.genre {
-                    Some(g) => format!("{name}: {g}"),
-                    None => name.to_string(),
-                },
+                Tab::Updates if self.updates() > 0 => format!("{name} {}", self.updates()),
                 _ => name.to_string(),
             };
-            let w = c.width(15, &label) + 16;
-            x -= w;
-            if *tab == self.tab {
-                c.rounded(x, 12, w, 25, 12, ACCENT);
+            let lw = c.width(SMALL, &label) + 16;
+            if tab == self.tab {
+                c.fill(x, ty, lw, BAR - 4, p.fg);
+                c.text(x + 8, ty + 2, SMALL, p.bg, &label);
+            } else {
+                c.frame(x, ty, lw, BAR - 4, 1, p.faint);
+                c.text(x + 8, ty + 2, SMALL, p.dim, &label);
             }
-            c.text(x + 8, 16, 15, if *tab == self.tab { 0x0d1117 } else { DIM }, &label);
-            x -= 2;
+            x += lw + 6;
         }
 
-        let items = self.items();
-        let t = self.tab_at();
+        self.draw_keys(c, p, &items, filter.as_deref());
+
+        // The list window.
+        let wx = EDGE + KEYS_W + 8;
+        let ww = w - wx - EDGE - 6;
+        let (area_top, area) = App::list_area(c);
+        window(c, p, wx, TOP, ww, App::foot(c) - 4 - TOP, TABS[t].1, &format!("{ports}"));
         let pick = App::pickable(&items, self.pick[t].min(items.len().saturating_sub(1)), 1);
         self.pick[t] = pick;
         // Scroll so the pick is in full view, its group's heading with it when it can.
@@ -903,278 +1321,643 @@ impl App {
         if pick == top && top > 0 && matches!(items[top - 1], Item::Heading(_)) {
             top -= 1;
         }
-        while top < pick && items[top..=pick].iter().map(Item::height).sum::<i32>() > area(c) {
+        while top < pick && items[top..=pick].iter().map(Item::height).sum::<i32>() > area {
             top += 1;
         }
         self.top[t] = top;
         if items.is_empty() {
             let text = match self.tab {
-                Tab::Installed => "Nothing installed with Port Store yet.",
-                Tab::Updates => "Everything installed is up to date.",
-                Tab::More => "Nothing more in the catalog.",
-                Tab::Apps => "No apps in the catalog.",
-                Tab::Games => "The catalog is empty: press Y to download it.",
+                Tab::Installed => "NOTHING INSTALLED WITH PORT STORE YET.",
+                Tab::Updates => "EVERYTHING INSTALLED IS UP TO DATE.",
+                Tab::More => "NOTHING MORE IN THE CATALOG.",
+                Tab::Apps if filter.is_some() => "NO APPS OF THIS KIND.",
+                Tab::Apps => "NO APPS IN THE CATALOG.",
+                Tab::Games if filter.is_some() => "NO GAMES OF THIS KIND.",
+                Tab::Games => "THE CATALOG IS EMPTY: PRESS Y TO DOWNLOAD IT.",
             };
-            let w = c.width(18, text);
-            c.text((c.w as i32 - w) / 2, 220, 18, DIM, text);
+            let tw = c.width(SMALL, text);
+            c.text(wx + (ww - tw) / 2, area_top + area / 2 - 10, SMALL, p.dim, text);
         }
-        let mut y = TOP;
+        let (rx, rw) = (wx + 6, ww - 26);
+        let mut y = area_top;
         let mut last = top;
         for (at, item) in items.iter().enumerate().skip(top) {
-            if y + item.height() > TOP + area(c) {
+            if y + item.height() > area_top + area {
                 break;
             }
             last = at;
             match item {
-                Item::End => c.fill(20, y + END / 2, c.w as i32 - 48, 1, PICK),
+                Item::End => c.dashes(rx + 4, y + END / 2, rw - 8, 4, 4, p.faint),
                 Item::Heading(name) => {
-                    c.text(20, y + 8, 15, ACCENT, name);
-                    let w = c.width(15, name);
-                    c.fill(30 + w, y + 17, c.w as i32 - 58 - w, 1, PICK);
+                    let tw = c.text(rx + 4, y + 4, SMALL, p.hi, &format!("> {}", name.to_uppercase()));
+                    c.dashes(rx + 14 + tw, y + 15, rw - 18 - tw, 4, 4, p.faint);
                 }
                 Item::Manual(m) => {
                     let m = self.index.manual[*m].clone();
-                    self.row(c, y, at == pick, &m.name, &m.thumb, 420);
-                    let sub = join(&[m.categories.join(", "), m.status.clone(), owned_word(&m.assets)]);
-                    c.text_fit(76, y + 29, 13, DIM, &sub, 440);
-                    c.text_right(c.w as i32 - 34, y + 16, 14, DIM, "by hand");
+                    self.row(c, p, rx, y, rw, at == pick, &m.name, &m.thumb, false);
+                    let sub = join(&[m.categories.join(", "), m.status.clone(), owned_word(&m.assets)]).to_uppercase();
+                    c.text_fit(rx + THUMB + 14, y + 32, SMALL, p.dim, &sub, rw - THUMB - 120);
+                    c.text_right(rx + rw - 8, y + 32, SMALL, p.dim, "[BY HAND]");
                 }
-                Item::Port(p) => {
-                    let port = self.index.ports[*p].clone();
-                    let (label, color) = match self.state(&port.id) {
-                        State::Installed(_) => ("Installed".to_string(), GOOD),
-                        State::Update(_) => ("Update".to_string(), WARN),
-                        State::ByHand => ("On card".to_string(), DIM),
-                        State::Absent => (size(port.file.size), DIM),
-                    };
-                    let lw = c.width(15, &label);
-                    self.row(c, y, at == pick, &port.name, &port.thumb, c.w as i32 - 130 - lw);
-                    if self.marked.contains(&port.id) {
-                        c.rounded(52, y + 30, 18, 18, 9, ACCENT);
-                        c.text(55, y + 30, 14, 0x0d1117, "✓");
-                    }
+                Item::Port(i) => {
+                    let port = self.index.ports[*i].clone();
+                    let marked = self.marked.contains(&port.id);
+                    self.row(c, p, rx, y, rw, at == pick, &port.name, &port.thumb, marked);
                     // Under a heading the group goes without saying.
-                    let grouped = matches!(self.tab, Tab::Games | Tab::Apps) && !port.group.is_empty();
+                    let grouped = matches!(self.tab, Tab::Games | Tab::Apps) && !port.group.is_empty() && !self.newest;
+                    // "app" goes without saying too: the tab says it.
+                    let kinds: Vec<&str> = port.categories.iter().map(String::as_str).filter(|c| *c != "app").collect();
                     let sub = join(&[
                         if self.newest { port.date.clone() } else { String::new() },
-                        if port.group.is_empty() || grouped { port.categories.join(", ") } else { port.group.clone() },
+                        if port.group.is_empty() || grouped { kinds.join(", ") } else { port.group.clone() },
                         port.status.clone(),
                         owned_word(&port.assets),
-                    ]);
-                    c.text_fit(76, y + 29, 13, DIM, &sub, c.w as i32 - 130 - lw);
-                    c.text_right(c.w as i32 - 34, y + 16, 15, color, &label);
+                    ])
+                    .to_uppercase();
+                    let tag_w = self.tag(c, p, rx + rw - 8, y + 32, &port);
+                    let mut sx = rx + THUMB + 14;
+                    if port.dev {
+                        sx += inverse(c, p, sx, y + 32, "DEV", p.dim) + 8;
+                    }
+                    c.text_fit(sx, y + 32, SMALL, p.dim, &sub, rx + rw - 16 - tag_w - sx);
                 }
             }
             y += item.height();
         }
-        if top > 0 || last + 1 < items.len() {
-            let track = area(c) - 6;
-            let h = (track * (last + 1 - top) as i32 / items.len() as i32).max(20);
-            let y = TOP + (track - h) * top as i32 / (items.len() - (last + 1 - top)).max(1) as i32;
-            c.rounded(c.w as i32 - 12, y, 4, h, 2, PICK);
-        }
-        let free = self.free.map(|f| format!("{} free", size(f))).unwrap_or_default();
-        let sort = if self.newest { "R2 A-Z" } else { "R2 Newest" };
-        let keys = match self.tab {
-            Tab::Games => format!("A Open  X Mark  Select Genre  {sort}  B Exit"),
-            Tab::Updates if !items.is_empty() => "A Open  Select Update all  L1/R1 Tabs  B Exit".to_string(),
-            Tab::More => "A Open   L1/R1 Tabs   B Exit".to_string(),
-            _ => format!("A Open  X Mark  {sort}  L1/R1 Tabs  B Exit"),
-        };
+        scrollbar(c, p, wx + ww - 18, area_top, area, top, last + 1 - top, items.len());
+
+        // The status line.
+        let fy = App::foot(c);
+        c.fill(EDGE, fy, w - 2 * EDGE, 2, p.dim);
         let left = match self.marked.len() {
-            0 => join(&[self.index_date(), if self.offline { "offline".into() } else { free }]),
-            n => format!("{n} marked: Start installs"),
+            0 => format!(
+                "CATALOG {} \\\\ {} \\\\ LINK {}",
+                self.index_date(),
+                self.free.map(|f| format!("{} FREE", size(f))).unwrap_or_default(),
+                self.link()
+            ),
+            n => format!("{n} MARKED \\\\ START INSTALLS THEM"),
         };
-        footer(c, &left, &keys);
+        let right = format!("V{}", env!("CARGO_PKG_VERSION"));
+        let rw = c.text_right(w - EDGE - 10, fy + 6, SMALL, p.faint, &right);
+        let left = c.fit(SMALL, &left, w - 2 * EDGE - 40 - rw);
+        c.text(EDGE + 10, fy + 6, SMALL, if self.marked.is_empty() { p.dim } else { p.hi }, &left);
     }
 
-    /// A row's background, picture (the first letter of the name without one) and
-    /// name.
-    fn row(&mut self, c: &mut Canvas, y: i32, picked: bool, name: &str, thumb: &str, name_width: i32) {
-        if picked {
-            c.rounded(10, y, c.w as i32 - 28, ROW - 4, 10, PICK);
+    /// The column of keys beside the list, and the list's mode under them.
+    fn draw_keys(&mut self, c: &mut Canvas, p: &Palette, items: &[Item], filter: Option<&str>) {
+        let mut keys: Vec<(&str, String)> = Vec::new();
+        if !items.is_empty() {
+            keys.push(("A", "OPEN".into()));
         }
-        let (bx, by) = (20, y + (ROW - 4 - THUMB) / 2);
+        if !matches!(self.tab, Tab::More) && !items.is_empty() {
+            keys.push(("X", "MARK".into()));
+        }
+        if !self.marked.is_empty() {
+            keys.push(("ST", "INSTALL".into()));
+        }
+        match self.tab {
+            Tab::Games | Tab::Apps => keys.push(("SEL", "FILTER".into())),
+            Tab::Updates if !items.is_empty() => keys.push(("SEL", "UPD ALL".into())),
+            _ => {}
+        }
+        if self.tab != Tab::More {
+            keys.push(("R2", if self.newest { "A-Z" } else { "NEWEST" }.into()));
+        }
+        keys.push(("Y", "RELOAD".into()));
+        keys.push(("L2", "SYSTEM".into()));
+        keys.push(("B", "EXIT".into()));
+        let x = EDGE + 10;
+        let mut y = TOP + 4;
+        for (key, label) in &keys {
+            let kw = c.text(x, y, SMALL, p.hi, &format!("[{key}]"));
+            c.text(x + kw.max(40) + 6, y, SMALL, p.fg, label);
+            y += 24;
+        }
+        // The mode, boxed.
+        y += 10;
+        let mode = [
+            format!("SORT: {}", if self.newest { "NEWEST" } else { "A-Z" }),
+            format!("SHOW: {}", filter.map_or("ALL".to_string(), str::to_uppercase)),
+            format!("DEV: {}", if self.look.dev { "SHOWN" } else { "HIDDEN" }),
+        ];
+        let bw = KEYS_W - 12;
+        if y + 3 * 22 + 12 < App::foot(c) - 6 {
+            c.frame(x - 4, y, bw, 3 * 22 + 10, 1, p.faint);
+            for (n, line) in mode.iter().enumerate() {
+                let line = c.fit(SMALL, line, bw - 12);
+                c.text(x + 2, y + 5 + n as i32 * 22, SMALL, p.dim, &line);
+            }
+        }
+    }
+
+    /// A row: its picture (the first letter of the name without one), its name, and
+    /// the pick's highlight and cursor.
+    #[allow(clippy::too_many_arguments)]
+    fn row(&mut self, c: &mut Canvas, p: &Palette, x: i32, y: i32, w: i32, picked: bool, name: &str, thumb: &str, marked: bool) {
+        if picked {
+            c.fill(x, y + 1, w, ROW - 4, mix(p.bg, p.fg, if p.mono { 34 } else { 255 }, p.faint));
+            c.fill(x, y + 1, 3, ROW - 4, p.fg);
+        }
+        let (bx, by) = (x + 8, y + (ROW - 2 - THUMB) / 2);
         match self.pictures.get(thumb) {
             Some(img) => {
                 let (ix, iy) = (bx + (THUMB - img.w as i32) / 2, by + (THUMB - img.h as i32) / 2);
-                c.image(ix, iy, &img);
+                self.picture(c, p, ix, iy, &img, 2);
             }
             None => {
-                c.rounded(bx, by, THUMB, THUMB, 8, if picked { BG } else { PANEL });
-                let letter: String = name.chars().take(1).collect();
+                c.frame(bx, by, THUMB, THUMB, 1, p.faint);
+                let letter: String = name.chars().take(1).collect::<String>().to_uppercase();
                 if !letter.is_empty() {
-                    let w = c.width(20, &letter);
-                    c.text(bx + (THUMB - w) / 2, by + 11, 20, DIM, &letter);
+                    let lw = c.width(NAME, &letter);
+                    c.text(bx + (THUMB - lw) / 2, by + 8, NAME, p.dim, &letter);
                 }
             }
         }
-        c.text_fit(76, y + 6, 19, TEXT, name, name_width);
+        if marked {
+            c.frame(bx - 2, by - 2, THUMB + 4, THUMB + 4, 2, p.hi);
+            c.fill(bx - 2, by - 2, 14, 14, p.hi);
+            c.text(bx + 1, by - 5, SMALL, p.bg, "*");
+        }
+        let nx = x + THUMB + 14;
+        let name_w = c.text_fit(nx, y + 2, NAME, if picked { p.hi } else { p.fg }, name, w - THUMB - 30);
+        if picked && self.blinking() && self.age() % 1.06 < 0.53 {
+            c.fill(nx + name_w + 4, y + 6, 10, 22, p.fg);
+        }
     }
 
-    /// The top of a port's page: its picture, and beside it what is said of it in
-    /// short. Its height.
-    fn page_top(&mut self, c: &mut Canvas, y: i32, cover: &str, lines: &[(u16, u32, String)]) -> i32 {
-        let img = self.pictures.get(cover);
-        let (x, width) = match &img {
-            Some(img) => (24 + img.w as i32 + 16, c.w as i32 - 48 - img.w as i32 - 16),
-            None => (24, c.w as i32 - 48),
-        };
-        let mut ty = y;
-        for (px, color, text) in lines {
-            for l in c.wrap(*px, text, width) {
-                c.text(x, ty, *px, *color, &l);
-                ty += *px as i32 + 7;
+    /// A port's state at the right of its row, from `right`: its width.
+    fn tag(&mut self, c: &mut Canvas, p: &Palette, right: i32, y: i32, port: &Port) -> i32 {
+        match self.state(&port.id) {
+            State::Installed(_) => c.text_right(right, y, SMALL, p.good, "[INSTALLED]"),
+            State::Update(_) => {
+                let tw = c.width(SMALL, "UPDATE") + 8;
+                inverse(c, p, right - tw, y, "UPDATE", p.warn)
             }
-            ty += 4;
+            State::ByHand => c.text_right(right, y, SMALL, p.dim, "[ON CARD]"),
+            State::Absent => c.text_right(right, y, SMALL, p.dim, &size(port.file.size)),
         }
-        match img {
+    }
+
+    /// A picture in the screen's light (dithered in its shades, in blocks of `cell`),
+    /// or in its own colours when so chosen or in the classic look.
+    fn picture(&self, c: &mut Canvas, p: &Palette, x: i32, y: i32, img: &Image, cell: usize) {
+        if p.mono && !self.look.color_pictures {
+            c.image_dithered(x, y, img, cell, &p.ramp());
+        } else {
+            c.image(x, y, img);
+        }
+    }
+
+    /// A page's picture: its window, with a ruler on two sides and cross hairs, as
+    /// an instrument shows it; "no signal" without one.
+    fn draw_cover(&mut self, c: &mut Canvas, p: &Palette, x: i32, y: i32, cover: &str) -> (i32, i32) {
+        let (pw, ph) = (224, 168);
+        let ruler = 36;
+        let (fx, fy) = (x + ruler, y);
+        c.frame(fx - 2, fy - 2, pw + 4, ph + 4, 1, p.dim);
+        match self.pictures.get(cover) {
             Some(img) => {
-                c.image(24, y, &img);
-                (ty - y).max(img.h as i32) + 12
+                let (ix, iy) = (fx + (pw - img.w as i32) / 2, fy + (ph - img.h as i32) / 2);
+                self.picture(c, p, ix, iy, &img, 3);
             }
-            None => ty - y + 8,
+            None => {
+                // Static, as a screen without a signal.
+                let mut seed = 0x2545_f491u32 ^ (self.age() * 12.0) as u32;
+                for by in (0..ph).step_by(4) {
+                    for bx in (0..pw).step_by(4) {
+                        seed ^= seed << 13;
+                        seed ^= seed >> 17;
+                        seed ^= seed << 5;
+                        if seed.is_multiple_of(5) {
+                            c.fill(fx + bx, fy + by, 3, 3, p.faint);
+                        }
+                    }
+                }
+                let tw = c.width(BODY, "NO SIGNAL");
+                c.fill(fx + (pw - tw) / 2 - 8, fy + ph / 2 - 16, tw + 16, 30, p.bg);
+                c.text(fx + (pw - tw) / 2, fy + ph / 2 - 12, BODY, p.dim, "NO SIGNAL");
+            }
+        }
+        if p.mono {
+            // Cross hairs through the middle, and the rulers' ticks and numbers.
+            c.dashes(fx, fy + ph / 2, pw, 2, 3, p.dim);
+            c.dashes_down(fx + pw / 2, fy, ph, 2, 3, p.dim);
+            for n in 0..=(ph / 14) {
+                let ty = fy + ph - n * 14;
+                c.fill(fx - 8, ty, if n % 2 == 0 { 6 } else { 3 }, 1, p.dim);
+                if n % 2 == 0 && n > 0 {
+                    c.text_right(fx - 10, ty - 8, 16, p.faint, &format!("{}", n * 10));
+                }
+            }
+            for n in 0..=(pw / 16) {
+                let tx = fx + n * 16;
+                c.fill(tx, fy + ph + 3, 1, if n % 2 == 0 { 6 } else { 3 }, p.dim);
+                if n % 2 == 0 && n > 0 && n < pw / 16 {
+                    let label = format!("{}", n * 10);
+                    let lw = c.width(16, &label);
+                    c.text(tx - lw / 2, fy + ph + 9, 16, p.faint, &label);
+                }
+            }
+        }
+        (ruler + pw + 4, ph + 28)
+    }
+
+    /// The facts beside a page's picture: label, dotted leader, value.
+    fn sheet(c: &mut Canvas, p: &Palette, x: i32, y: i32, w: i32, rows: &[(&str, String)]) -> i32 {
+        let mut ty = y;
+        for (label, value) in rows.iter().filter(|(_, v)| !v.is_empty()) {
+            let lw = c.text(x, ty, SMALL, p.dim, label);
+            let value = c.fit(SMALL, value, w - lw - 24);
+            let vw = c.width(SMALL, &value);
+            c.dashes(x + lw + 6, ty + 14, w - lw - vw - 14, 1, 3, p.faint);
+            c.text(x + w - vw, ty, SMALL, p.fg, &value);
+            ty += 23;
+        }
+        ty - y
+    }
+
+    /// The notes window of a page, its lines from `scroll` on: how many did not fit.
+    fn notes(&mut self, c: &mut Canvas, p: &Palette, y: i32, title: &str, lines: &[(u16, u32, String)], scroll: usize) {
+        let (w, x) = (c.w as i32 - 2 * EDGE - 12, EDGE + 6);
+        let bottom = App::foot(c) - 4;
+        window(c, p, x, y, w, bottom - y, title, "");
+        let mut ty = y + BAR + 4;
+        let mut hidden = 0;
+        for (n, (px, color, text)) in lines.iter().enumerate().skip(scroll) {
+            let lh = *px as i32 + 2;
+            // In order: the first line that does not fit ends the page.
+            if ty + lh > bottom - 4 {
+                hidden = lines.len() - n;
+                break;
+            }
+            c.text(x + 12, ty, *px, *color, text);
+            ty += lh;
+        }
+        self.scroll_max = if hidden > 0 { scroll + 1 } else { scroll };
+        if scroll > 0 || hidden > 0 {
+            let shown = lines.len().saturating_sub(scroll + hidden);
+            scrollbar(c, p, x + w - 18, y + BAR + 2, bottom - y - BAR - 6, scroll, shown, lines.len());
         }
     }
 
-    fn draw_details(&mut self, c: &mut Canvas, id: &str, scroll: usize) {
+    fn draw_details(&mut self, c: &mut Canvas, p: &Palette, id: &str, scroll: usize) {
         let Some(port) = self.port(id).cloned() else { return };
         let state = self.state(id);
-        c.fill(0, 0, c.w as i32, TOP - 8, PANEL);
-        let (label, color) = match &state {
-            State::Installed(v) => (format!("Installed {v}"), GOOD),
-            State::Update(v) => (format!("{v} installed"), WARN),
-            State::ByHand => ("On the card (by hand)".into(), DIM),
-            State::Absent => (String::new(), DIM),
+        let w = c.w as i32;
+        let label = match &state {
+            State::Installed(v) => format!("[INSTALLED {}]", v.to_uppercase()),
+            State::Update(v) => format!("[{} INSTALLED]", v.to_uppercase()),
+            State::ByHand => "[ON THE CARD BY HAND]".into(),
+            State::Absent => "[NOT INSTALLED]".into(),
         };
-        let lw = c.text_right(c.w as i32 - 20, 16, 15, color, &label);
-        c.text_fit(20, 11, 24, TEXT, &port.name, c.w as i32 - 60 - lw);
+        self.chrome(c, p, &format!("SUBJECT: {}", port.name.to_uppercase()), &label);
+        let facts = join(&[port.group.clone(), port.categories.join(", "), port.status.clone()]).to_uppercase();
+        let facts = c.fit(SMALL, &format!("GROUP: {}", facts.replace(" · ", " \\\\ ")), w - 2 * EDGE - 24);
+        c.text(EDGE + 12, EDGE + BAR + 4, SMALL, p.dim, &facts);
 
-        // The page: its top (picture and facts), then lines of (size, colour, text);
-        // scrolling past the top is the first step down.
+        let (cw, ch) = self.draw_cover(c, p, EDGE + 6, TOP, &port.cover);
+        let sx = EDGE + 6 + cw + 18;
+        let mut rows = vec![
+            ("VERSION", port.version.clone()),
+            ("RELEASED", port.date.clone()),
+            ("DOWNLOAD", size(port.file.size)),
+            ("ON CARD", size(port.install.bytes)),
+            ("PORTER", port.porter.join(", ")),
+            ("FILES", port.install.files.to_string()),
+        ];
+        if !port.source.is_empty() {
+            rows.push(("SOURCE", port.source.clone()));
+        }
+        if port.dev {
+            rows.push(("BUILD", "DEVELOPMENT".into()));
+        }
+        if port.owned() {
+            rows.push(("NEEDS", "YOUR GAME FILES".into()));
+        }
+        let sh = App::sheet(c, p, sx, TOP, w - sx - EDGE - 10, &rows);
+
+        // The notes: what is said of it, what it needs, where it is from.
         let mut lines: Vec<(u16, u32, String)> = Vec::new();
-        let width = c.w as i32 - 48;
+        let width = w - 2 * EDGE - 50;
         let para = |c: &mut Canvas, lines: &mut Vec<(u16, u32, String)>, px: u16, color: u32, text: &str| {
             for l in c.wrap(px, text, width) {
                 lines.push((px, color, l));
             }
         };
-        let by = if port.porter.is_empty() { String::new() } else { format!("by {}", port.porter.join(", ")) };
-        let facts = vec![
-            (15, DIM, join(&[port.group.clone(), port.categories.join(", "), port.status.clone()])),
-            (15, DIM, by),
-            (15, DIM, format!(
-                "Version {}{}",
-                port.version,
-                if port.date.is_empty() { String::new() } else { format!(" ({})", port.date) }
-            )),
-            (15, DIM, format!("{} download · {} on the card", size(port.file.size), size(port.install.bytes))),
-        ];
-        let facts: Vec<_> = facts.into_iter().filter(|(_, _, t)| !t.is_empty()).collect();
-        if !port.text().is_empty() {
-            para(c, &mut lines, 17, TEXT, port.text());
-            lines.push((8, DIM, String::new()));
-        }
+        // What you bring first: it is what the page is opened for, more often than not.
         if !port.needs.is_empty() {
-            para(c, &mut lines, 17, TEXT, "You bring:");
+            para(c, &mut lines, BODY, p.hi, "YOU BRING:");
             let have = self.needs.get(id);
             for (i, need) in port.needs.iter().enumerate() {
                 let (mark, color, said) = match have.and_then(|h| h.get(i)) {
                     None => match &self.checking {
-                        Some(name) => ("…", DIM, format!("reading {name}")),
-                        None => ("…", DIM, "checking".to_string()),
+                        Some(name) => ("[..]", p.dim, format!("reading {name}")),
+                        None => ("[..]", p.dim, "checking".to_string()),
                     },
-                    Some(Have::Unknown) => ("•", DIM, "see the port's page".to_string()),
-                    Some(Have::Missing) => ("✗", BAD, "not found on the card".to_string()),
-                    Some(Have::Found(p)) => ("✓", GOOD, format!("found: {p}")),
-                    Some(Have::WrongVersion(p)) => ("!", WARN, format!("{p} is another version of the game")),
+                    Some(Have::Unknown) => ("[??]", p.dim, "see the port's page".to_string()),
+                    Some(Have::Missing) => ("[--]", p.bad, "not found on the card".to_string()),
+                    Some(Have::Found(f)) => ("[OK]", p.good, format!("found: {f}")),
+                    Some(Have::WrongVersion(f)) => ("[!!]", p.warn, format!("{f} is another version of the game")),
                 };
-                para(c, &mut lines, 16, color, &format!("{mark} {} — {said}", need.what));
+                para(c, &mut lines, BODY, color, &format!("{mark} {} — {said}", need.what));
                 if let Some(Some(found)) = self.imports.get(id).and_then(|f| f.get(i)) {
-                    para(c, &mut lines, 14, ACCENT, &format!("   In {}: Start moves it to {}", found.shown, found.to));
+                    para(c, &mut lines, SMALL, p.hi, &format!("     IN {}: START MOVES IT TO {}", found.shown, found.to));
                 } else if !need.hint.is_empty() {
-                    para(c, &mut lines, 14, DIM, &format!("   {}", need.hint));
+                    para(c, &mut lines, SMALL, p.dim, &format!("     {}", need.hint));
                 }
             }
-            lines.push((8, DIM, String::new()));
+            lines.push((8, p.dim, String::new()));
         }
-
+        if !port.text().is_empty() {
+            para(c, &mut lines, BODY, p.fg, port.text());
+            lines.push((8, p.dim, String::new()));
+        }
         if !port.url.is_empty() {
-            para(c, &mut lines, 14, ACCENT, port.url.trim_start_matches("https://"));
+            para(c, &mut lines, SMALL, p.hi, port.url.trim_start_matches("https://"));
         }
-        para(c, &mut lines, 13, DIM, &format!("File: {} (without Wi-Fi: put it in App/PortStore/downloads)", port.file.name));
+        para(c, &mut lines, SMALL, p.dim, &format!("FILE: {} (WITHOUT WI-FI: PUT IT IN APP/PORTSTORE/DOWNLOADS)", port.file.name));
+        let ny = TOP + ch.max(sh) + 6;
+        self.notes(c, p, ny, "NOTES", &lines, scroll);
 
-        let mut y = TOP;
-        if scroll == 0 {
-            y += self.page_top(c, TOP, &port.cover, &facts);
-        }
-        let mut hidden = 0;
-        for (n, (px, color, text)) in lines.iter().skip(scroll.saturating_sub(1)).enumerate() {
-            let h = *px as i32 + 7;
-            // In order: the first line that does not fit ends the page.
-            if y + h > foot(c) - 4 {
-                hidden = lines.len() - scroll.saturating_sub(1) - n;
-                break;
-            }
-            c.text(24, y, *px, *color, text);
-            y += h;
-        }
-        self.scroll_max = if hidden > 0 { scroll + 1 } else { scroll };
-        if scroll > 0 || hidden > 0 {
-            c.text_right(c.w as i32 - 16, foot(c) - 22, 13, DIM, if hidden > 0 { "▼ more" } else { "▲" });
-        }
         let verb = match state {
-            State::Installed(_) => "A Reinstall",
-            State::Update(_) => "A Update",
-            _ => "A Install",
+            State::Installed(_) => "REINSTALL",
+            State::Update(_) => "UPDATE",
+            _ => "INSTALL",
         };
-        let mut keys = vec![verb];
+        let mut keys = vec![("A", verb)];
         if matches!(state, State::Installed(_) | State::Update(_)) && id != crate::SELF_ID {
-            keys.push("X Remove");
+            keys.push(("X", "REMOVE"));
         }
         if !port.needs.is_empty() {
-            keys.push("Y Check again");
+            keys.push(("Y", "CHECK AGAIN"));
         }
         if self.imports.get(id).is_some_and(|f| f.iter().any(|p| p.is_some())) {
-            keys.push("Start Place files");
+            keys.push(("ST", "PLACE FILES"));
         }
-
-        keys.push("B Back");
-        footer(c, "", &keys.join("   "));
+        keys.push(("B", "BACK"));
+        self.softkeys(c, p, &keys);
     }
 
-    fn draw_manual(&mut self, c: &mut Canvas, at: usize, scroll: usize) {
+    fn draw_manual(&mut self, c: &mut Canvas, p: &Palette, at: usize, scroll: usize) {
         let Some(m) = self.index.manual.get(at).cloned() else { return };
-        c.fill(0, 0, c.w as i32, TOP - 8, PANEL);
-        c.text_fit(20, 11, 24, TEXT, &m.name, c.w as i32 - 40);
-        let facts = vec![(15, DIM, join(&[m.categories.join(", "), m.status.clone(), owned_word(&m.assets)]))];
+        let w = c.w as i32;
+        self.chrome(c, p, &format!("SUBJECT: {}", m.name.to_uppercase()), "[BY HAND]");
+        let facts = join(&[m.categories.join(", "), m.status.clone(), owned_word(&m.assets)]).to_uppercase();
+        c.text_fit(EDGE + 12, EDGE + BAR + 4, SMALL, p.dim, &facts.replace(" · ", " \\\\ "), w - 2 * EDGE - 24);
+        let (cw, ch) = self.draw_cover(c, p, EDGE + 6, TOP, &m.cover);
+        let sx = EDGE + 6 + cw + 18;
+        let mut ty = TOP;
+        for l in c.wrap(BODY, "Port Store has no recipe for this one yet: install it by hand from its page, on a computer.", w - sx - EDGE - 10) {
+            c.text(sx, ty, BODY, p.fg, &l);
+            ty += BODY as i32 + 2;
+        }
         let mut lines: Vec<(u16, u32, String)> = Vec::new();
-        let width = c.w as i32 - 48;
-        for (px, color, text) in [
-            (17, TEXT, m.notes.as_str()),
-            (16, TEXT, "Port Store has no recipe for this one yet: install it by hand from its page, on a computer."),
-            (14, ACCENT, m.url.as_deref().unwrap_or("").trim_start_matches("https://")),
-        ] {
+        let width = w - 2 * EDGE - 50;
+        for (px, color, text) in [(BODY, p.fg, m.notes.as_str()), (SMALL, p.hi, m.url.as_deref().unwrap_or("").trim_start_matches("https://"))] {
             for l in c.wrap(px, text, width) {
                 lines.push((px, color, l));
             }
-            lines.push((8, DIM, String::new()));
+            lines.push((8, p.dim, String::new()));
         }
-        let mut y = TOP;
-        if scroll == 0 {
-            y += self.page_top(c, TOP, &m.cover, &facts);
-        }
-        let mut more = false;
-        for (px, color, text) in lines.iter().skip(scroll.saturating_sub(1)) {
-            if y + *px as i32 + 7 > foot(c) - 4 {
-                more = true;
-                break;
+        self.notes(c, p, TOP + ch.max(ty - TOP) + 6, "NOTES", &lines, scroll);
+        self.softkeys(c, p, &[("B", "BACK")]);
+    }
+
+    /// A page's buttons in the bottom bar, from the right.
+    fn softkeys(&mut self, c: &mut Canvas, p: &Palette, keys: &[(&str, &str)]) {
+        let fy = App::foot(c);
+        c.fill(EDGE, fy, c.w as i32 - 2 * EDGE, 2, p.dim);
+        buttons(c, p, c.w as i32 - EDGE - 8, fy + 4, keys);
+    }
+
+    /// A window over the page: its frame opening, then its text typed.
+    fn dialog(&mut self, c: &mut Canvas, p: &Palette, title: &str, text: &str, keys: &[(&str, &str)]) {
+        let w = (c.w as i32 - 60).min(560);
+        let mut lines = c.wrap(BODY, text, w - 40);
+        // On the screen whole: what does not fit ends in "…".
+        let room = ((c.h as i32 - 2 * EDGE - 40 - BAR - 60) / (BODY as i32 + 2)).max(1) as usize;
+        if lines.len() > room {
+            lines.truncate(room);
+            if let Some(last) = lines.last_mut() {
+                last.push_str(" …");
             }
-            c.text(24, y, *px, *color, text);
-            y += *px as i32 + 7;
         }
-        self.scroll_max = if more { scroll + 1 } else { scroll };
-        footer(c, "", "B Back");
+        let h = BAR + 14 + lines.len() as i32 * (BODY as i32 + 2) + 14 + if keys.is_empty() { 0 } else { 34 };
+        let (x, y) = ((c.w as i32 - w) / 2, (c.h as i32 - h) / 2);
+        if !self.opening(c, p, x, y, w, h) {
+            return;
+        }
+        window(c, p, x, y, w, h, &title.to_uppercase(), "");
+        let mut left = ((self.age() - OPEN) * TYPE).max(0.0) as usize;
+        let mut ty = y + BAR + 12;
+        for l in &lines {
+            let shown: String = l.chars().take(left).collect();
+            left = left.saturating_sub(l.chars().count());
+            c.text(x + 20, ty, BODY, p.fg, &shown);
+            ty += BODY as i32 + 2;
+        }
+        if !keys.is_empty() {
+            buttons(c, p, x + w - 14, y + h - 36, keys);
+        }
+    }
+
+    /// A window's frame opening from a line: whether it is open (its insides drawn).
+    fn opening(&self, c: &mut Canvas, p: &Palette, x: i32, y: i32, w: i32, h: i32) -> bool {
+        let reveal = (self.age() / OPEN).min(1.0);
+        if reveal >= 1.0 {
+            return true;
+        }
+        let hh = ((h as f32 * reveal) as i32).max(4);
+        let top = y + (h - hh) / 2;
+        c.fill(x, top, w, hh, p.panel);
+        c.frame(x, top, w, hh, 2, p.hi);
+        false
+    }
+
+    /// A job's window: its event log, the progress, the spinner.
+    fn draw_busy(&mut self, c: &mut Canvas, p: &Palette, title: &str, step: Option<&Step>, stoppable: bool) {
+        let w = (c.w as i32 - 60).min(560);
+        let shown = 6;
+        let h = BAR + 14 + shown as i32 * (SMALL as i32 + 3) + 40 + 36;
+        let (x, y) = ((c.w as i32 - w) / 2, (c.h as i32 - h) / 2);
+        if !self.opening(c, p, x, y, w, h) {
+            return;
+        }
+        let spin = ["|", "/", "-", "\\"][(self.now.saturating_duration_since(self.log_at).as_millis() / 125 % 4) as usize];
+        let title = format!("EVENT LOG \\\\ {}", title.to_uppercase());
+        window(c, p, x, y, w, h, &title, spin);
+        let mut ty = y + BAR + 10;
+        let from = self.log.len().saturating_sub(shown);
+        for (n, (secs, _, line)) in self.log.iter().enumerate().skip(from) {
+            let last = n + 1 == self.log.len();
+            let stamp = format!("T+{:02}:{:02}", secs / 60, secs % 60);
+            let sw = c.text(x + 20, ty, SMALL, p.dim, &stamp);
+            c.text(x + 26 + sw, ty, SMALL, p.faint, "|");
+            let line = c.fit(SMALL, line, w - sw - 70);
+            c.text(x + 40 + sw, ty, SMALL, if last { p.hi } else { p.fg }, &line);
+            ty += SMALL as i32 + 3;
+        }
+        let (_, _, bar) = step_line(step);
+        let by = y + BAR + 14 + shown as i32 * (SMALL as i32 + 3) + 6;
+        segments(c, p, x + 20, by, w - 110, bar);
+        let pct = bar.map_or("....".to_string(), |f| format!("{:3}%", (f.clamp(0.0, 1.0) * 100.0) as u32));
+        c.text_right(x + w - 20, by + 2, SMALL, p.fg, &pct);
+        if stoppable {
+            buttons(c, p, x + w - 14, y + h - 36, &[("B", "ABORT")]);
+        }
+    }
+
+    fn draw_filter(&mut self, c: &mut Canvas, p: &Palette, at: usize) {
+        let choices = self.choices();
+        let w = 300;
+        let row = 26;
+        let room = ((App::foot(c) - TOP - 20 - BAR - 44) / row).max(3) as usize;
+        let h = BAR + 10 + choices.len().min(room) as i32 * row + 44;
+        let (x, y) = (EDGE + KEYS_W + 20, TOP + 4);
+        if !self.opening(c, p, x, y, w, h) {
+            return;
+        }
+        let t = self.tab_at();
+        window(c, p, x, y, w, h, &format!("FILTER \\\\ {}", TABS[t].1), "");
+        let first = at.saturating_sub(room - 1);
+        let mut ty = y + BAR + 6;
+        for (n, choice) in choices.iter().enumerate().skip(first).take(room) {
+            let picked = n == at;
+            if picked {
+                c.fill(x + 6, ty, w - 12, row - 2, p.fg);
+            }
+            let (ink, dim) = if picked { (p.bg, p.bg) } else { (p.fg, p.dim) };
+            let current = match choice {
+                Choice::All(_) => self.filter[t].is_none(),
+                Choice::Category(name, _) => self.filter[t].as_deref() == Some(name),
+                _ => false,
+            };
+            let (label, count) = match choice {
+                Choice::All(n) => (format!("ALL {}", TABS[t].1), *n),
+                Choice::Category(name, n) => (name.to_uppercase(), *n),
+                Choice::Line => {
+                    c.text(x + 14, ty + 1, SMALL, p.faint, "-- CHANNEL --");
+                    ty += row;
+                    continue;
+                }
+                Choice::Dev(n) => (format!("[{}] DEV BUILDS", if self.look.dev { "X" } else { " " }), *n),
+            };
+            c.text(x + 14, ty + 1, SMALL, ink, if current { ">" } else { " " });
+            c.text_fit(x + 30, ty + 1, SMALL, ink, &label, w - 90);
+            c.text_right(x + w - 16, ty + 1, SMALL, dim, &count.to_string());
+            ty += row;
+        }
+        buttons(c, p, x + w - 12, y + h - 36, &[("A", "SET"), ("B", "CLOSE")]);
+    }
+
+    fn draw_system(&mut self, c: &mut Canvas, p: &Palette, at: usize) {
+        let w = 380;
+        let row = 30;
+        let h = BAR + 12 + SYSTEM.len() as i32 * row + 50;
+        let (x, y) = ((c.w as i32 - w) / 2, TOP + 20);
+        if !self.opening(c, p, x, y, w, h) {
+            return;
+        }
+        window(c, p, x, y, w, h, "SYSTEM", "");
+        let values = [
+            self.look.theme_name().to_string(),
+            self.look.effects_name().to_string(),
+            if self.look.color_pictures { "IN COLOR" } else { "SCREEN" }.to_string(),
+            if self.look.dev { "SHOWN" } else { "HIDDEN" }.to_string(),
+        ];
+        let mut ty = y + BAR + 8;
+        for (n, (label, value)) in SYSTEM.iter().zip(values).enumerate() {
+            let picked = n == at;
+            if picked {
+                c.fill(x + 6, ty, w - 12, row - 4, p.fg);
+            }
+            let ink = if picked { p.bg } else { p.fg };
+            c.text(x + 16, ty + 2, SMALL, ink, label);
+            c.text_right(x + w - 16, ty + 2, SMALL, ink, &format!("< {value} >"));
+            ty += row;
+        }
+        buttons(c, p, x + w - 12, y + h - 36, &[("<>", "CHANGE"), ("B", "CLOSE")]);
+    }
+}
+
+/// The small square at a title bar's left, as a window's.
+fn icon(c: &mut Canvas, p: &Palette, x: i32, y: i32) {
+    c.frame(x, y, 14, 14, 1, p.fg);
+    c.fill(x + 4, y + 4, 6, 6, p.fg);
+}
+
+/// A window: its inside, frame and title bar (the square, the title, something at
+/// the right).
+#[allow(clippy::too_many_arguments)]
+fn window(c: &mut Canvas, p: &Palette, x: i32, y: i32, w: i32, h: i32, title: &str, right: &str) {
+    c.fill(x, y, w, h, p.panel);
+    c.frame(x, y, w, h, 2, p.dim);
+    c.fill(x, y + BAR - 4, w, 2, p.dim);
+    icon(c, p, x + 6, y + 5);
+    let rw = if right.is_empty() { 0 } else { c.text_right(x + w - 10, y + 2, SMALL, p.dim, right) };
+    let title = c.fit(SMALL, title, w - 50 - rw);
+    c.text(x + 28, y + 2, SMALL, p.fg, &title);
+}
+
+/// Text in reverse (a block of `color`, the text in the background's): its width.
+fn inverse(c: &mut Canvas, p: &Palette, x: i32, y: i32, text: &str, color: u32) -> i32 {
+    let w = c.width(SMALL, text) + 8;
+    c.fill(x, y + 1, w, SMALL as i32 - 1, color);
+    c.text(x + 4, y, SMALL, p.bg, text);
+    w
+}
+
+/// Buttons in a row ending at `right`: the key in reverse, its word beside it.
+fn buttons(c: &mut Canvas, p: &Palette, right: i32, y: i32, keys: &[(&str, &str)]) {
+    let mut x = right;
+    for (key, label) in keys.iter().rev() {
+        let lw = c.width(SMALL, label);
+        let kw = c.width(SMALL, key) + 8;
+        let bw = kw + lw + 14;
+        x -= bw;
+        c.frame(x, y, bw, 24, 1, p.dim);
+        c.fill(x + 2, y + 2, kw, 20, p.fg);
+        c.text(x + 6, y + 1, SMALL, p.bg, key);
+        c.text(x + kw + 8, y + 1, SMALL, p.fg, label);
+        x -= 6;
+    }
+}
+
+/// A progress bar of blocks; without a share known, a block running along.
+fn segments(c: &mut Canvas, p: &Palette, x: i32, y: i32, w: i32, share: Option<f32>) {
+    let n = (w / 12).max(1);
+    let lit = share.map(|f| (f.clamp(0.0, 1.0) * n as f32).round() as i32);
+    c.frame(x - 3, y - 3, n * 12 + 4, 22, 1, p.faint);
+    for i in 0..n {
+        let on = lit.is_some_and(|l| i < l);
+        c.fill(x + i * 12, y, 10, 16, if on { p.fg } else { p.faint });
+    }
+}
+
+/// A scroll bar: arrows in boxes, the track, and the part on show.
+#[allow(clippy::too_many_arguments)]
+fn scrollbar(c: &mut Canvas, p: &Palette, x: i32, y: i32, h: i32, top: usize, shown: usize, total: usize) {
+    if total == 0 || (top == 0 && shown >= total) {
+        return;
+    }
+    c.frame(x, y, 14, 14, 1, p.dim);
+    c.arrow(x + 3, y + 4, 9, true, p.fg);
+    c.frame(x, y + h - 14, 14, 14, 1, p.dim);
+    c.arrow(x + 3, y + h - 9, 9, false, p.fg);
+    let track = h - 32;
+    c.dashes_down(x + 7, y + 16, track, 1, 2, p.faint);
+    let th = (track * shown as i32 / total as i32).max(12);
+    let ty = y + 16 + (track - th) * top as i32 / (total - shown.min(total)).max(1) as i32;
+    c.fill(x + 3, ty, 9, th, p.fg);
+}
+
+/// `a` on `b` of 255, or `classic` for the classic look (no blend of its own).
+fn mix(bg: u32, fg: u32, a: u32, classic: u32) -> u32 {
+    if a >= 255 {
+        classic
+    } else {
+        canvas::mix(bg, fg, a)
     }
 }
 
@@ -1194,67 +1977,37 @@ fn join(parts: &[String]) -> String {
         .join(" · ")
 }
 
-fn step_text(step: Option<&Step>) -> (String, Option<f32>) {
+/// A job's step as a line of its event log: its kind (the same kind's next takes the
+/// line's place), the line, and the share done when known.
+fn step_line(step: Option<&Step>) -> (u32, String, Option<f32>) {
     match step {
-        None => ("Starting…".into(), None),
+        None => (0, "STARTING".into(), None),
         Some(Step::Download { done, total }) => (
-            format!("Downloading {} of {}", size(*done), size(*total)),
+            1,
+            format!("DOWNLOAD {} / {}", size(*done), size(*total)),
             Some(*done as f32 / (*total).max(1) as f32),
         ),
-        Some(Step::Check) => ("Checking the file…".into(), None),
-        Some(Step::Unpack { total: 0, .. }) => ("Unpacking…".into(), None),
+        Some(Step::Check) => (2, "VERIFY SHA-256".into(), None),
+        Some(Step::Unpack { total: 0, .. }) => (3, "UNPACK".into(), None),
         Some(Step::Unpack { done, total }) => (
-            format!("Unpacking {} of {}", size(*done), size(*total)),
+            3,
+            format!("UNPACK {} / {}", size(*done), size(*total)),
             Some(*done as f32 / (*total).max(1) as f32),
         ),
-        Some(Step::Finish) => ("Putting the files in place…".into(), None),
+        Some(Step::Finish) => (4, "PLACE FILES".into(), None),
     }
 }
 
-/// The footer's top, and the list's own space above it.
-fn foot(c: &Canvas) -> i32 {
-    c.h as i32 - 36
-}
-
-fn area(c: &Canvas) -> i32 {
-    foot(c) - TOP - 6
-}
-
-fn footer(c: &mut Canvas, left: &str, keys: &str) {
-    c.fill(0, foot(c), c.w as i32, c.h as i32 - foot(c), PANEL);
-    c.text(16, foot(c) + 10, 14, DIM, left);
-    c.text_right(c.w as i32 - 16, foot(c) + 10, 14, TEXT, keys);
-}
-
-fn dialog(c: &mut Canvas, title: &str, text: &str, bar: Option<f32>, keys: &str) {
-    let w = 520;
-    let mut lines = c.wrap(17, text, w - 48);
-    // On the screen whole: what does not fit ends in "…".
-    let room = ((c.h as i32 - 70 - 30 - 34 - 40) / 24).max(1) as usize;
-    if lines.len() > room {
-        lines.truncate(room);
-        if let Some(last) = lines.last_mut() {
-            last.push_str(" …");
+/// The time of day, as the title bar shows it.
+fn clock() -> String {
+    // SAFETY: localtime_r writes only the tm given.
+    unsafe {
+        let t = libc::time(std::ptr::null_mut());
+        let mut tm: libc::tm = std::mem::zeroed();
+        if libc::localtime_r(&t, &mut tm).is_null() {
+            return String::new();
         }
-    }
-    let h = 70 + lines.len() as i32 * 24 + if bar.is_some() { 30 } else { 0 } + if keys.is_empty() { 0 } else { 34 };
-    let (x, y) = ((c.w as i32 - w) / 2, (c.h as i32 - h) / 2);
-    c.rounded(x, y, w, h, 14, PANEL);
-    c.text_fit(x + 24, y + 18, 21, TEXT, title, w - 48);
-    let mut ty = y + 56;
-    for l in &lines {
-        c.text(x + 24, ty, 17, TEXT, l);
-        ty += 24;
-    }
-    if let Some(f) = bar {
-        let bw = w - 48;
-        c.rounded(x + 24, ty + 6, bw, 12, 6, PICK);
-        let fw = ((bw as f32 * f.clamp(0.0, 1.0)) as i32).max(12);
-        c.rounded(x + 24, ty + 6, fw, 12, 6, ACCENT);
-        ty += 30;
-    }
-    if !keys.is_empty() {
-        c.text_right(x + w - 24, ty + 8, 15, DIM, keys);
+        format!("{:02}:{:02}", tm.tm_hour, tm.tm_min)
     }
 }
 
@@ -1269,18 +2022,56 @@ pub fn run(store: Store) -> Result<(), String> {
     let mut app = App::new(store);
     app.refresh_quietly();
     let mut canvas = Canvas::new(w, h);
+    let mut crt = Crt::new(w, h, app.effects());
+    let start = Instant::now();
+    app.now = start;
+    app.boot = Some(start);
+    crt.start(Fx::PowerOn, start);
+    crt.wake(start);
+    let mut sig = app.sig();
     'shown: loop {
-        if app.dirty {
+        let now = Instant::now();
+        app.now = now;
+        crt.effects = app.effects();
+        crt.beam = canvas::mix(app.palette().hi, 0xffffff, 140);
+        let due = app.next_draw().is_some_and(|every| now.saturating_duration_since(app.drawn_at) >= every);
+        let changed = app.dirty || due;
+        if changed {
             app.draw(&mut canvas);
-            fb.show(&canvas.px);
             app.dirty = false;
+            app.drawn_at = now;
         }
-        for key in input.poll(Duration::from_millis(100)) {
+        if changed || crt.next_frame(now).is_some() {
+            fb.show(crt.frame(&canvas.px, changed, now));
+        }
+        let wait = [app.next_draw(), crt.next_frame(now), Some(Duration::from_millis(100))]
+            .into_iter()
+            .flatten()
+            .min()
+            .unwrap_or(Duration::from_millis(100));
+        for key in input.poll(wait) {
+            crt.wake(Instant::now());
+            app.now = Instant::now();
             if app.key(key) == Flow::Exit && !app.busy {
                 break 'shown;
             }
         }
         app.pump();
+        let now_sig = app.sig();
+        if now_sig != sig {
+            if let Some(fx) = fx_between(&sig, &now_sig) {
+                crt.start(fx, Instant::now());
+            }
+            app.since = Instant::now();
+            sig = now_sig;
+        }
+    }
+    // The tube switching off.
+    let off = Instant::now();
+    crt.start(Fx::PowerOff, off);
+    while crt.playing(Instant::now()) {
+        fb.show(crt.frame(&canvas.px, false, Instant::now()));
+        std::thread::sleep(Duration::from_millis(30));
     }
     if app.restart {
         // Port Store has updated itself: the new program, in the place of this one.
@@ -1294,11 +2085,18 @@ pub fn run(store: Store) -> Result<(), String> {
     Ok(())
 }
 
-/// Screens as PNGs, for looking at them off the device: the list in each tab, the
-/// page of each port given (or the first), a dialog.
+/// Screens as PNGs, for looking at them off the device, as the tube shows them: the
+/// list in each tab, the page of each port given (or the first), the windows.
+/// PORTSTORE_SHOT_THEME picks the theme (green by default).
 pub fn shots(store: Store, dir: &std::path::Path, ids: &[String]) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     let mut app = App::new(store);
+    app.still = true;
+    // As once the catalog has come, without downloading it.
+    app.online = !app.store.index_url.is_empty();
+    if let Ok(theme) = std::env::var("PORTSTORE_SHOT_THEME") {
+        app.look.theme = theme;
+    }
     // PORTSTORE_SHOT_SIZE=752x560: the screens of the Mini v4 and Flip.
     let (w, h) = std::env::var("PORTSTORE_SHOT_SIZE")
         .ok()
@@ -1308,6 +2106,7 @@ pub fn shots(store: Store, dir: &std::path::Path, ids: &[String]) -> Result<(), 
         })
         .unwrap_or((W, H));
     let mut c = Canvas::new(w, h);
+    let mut crt = Crt::new(w, h, app.effects());
     let mut save = |app: &mut App, name: &str| {
         app.draw(&mut c);
         // Pictures come in on their own thread: a little while for them.
@@ -1317,8 +2116,20 @@ pub fn shots(store: Store, dir: &std::path::Path, ids: &[String]) -> Result<(), 
                 app.draw(&mut c);
             }
         }
-        c.save_png(&dir.join(format!("{name}.png"))).map_err(|e| e.to_string())
+        crt.effects = app.effects();
+        let px = match crt.effects {
+            Effects::Off => c.px.clone(),
+            _ => crt.lit(&c.px).to_vec(),
+        };
+        canvas::save_png(&dir.join(format!("{name}.png")), w, h, &px).map_err(|e| e.to_string())
     };
+    // The boot screen, typed most of the way.
+    app.still = false;
+    app.now = Instant::now();
+    app.boot = Some(app.now - Duration::from_millis(1800));
+    save(&mut app, "boot")?;
+    app.boot = None;
+    app.still = true;
     for (tab, name) in TABS {
         app.tab = tab;
         save(&mut app, &format!("list-{}", name.to_lowercase()))?;
@@ -1330,9 +2141,15 @@ pub fn shots(store: Store, dir: &std::path::Path, ids: &[String]) -> Result<(), 
         save(&mut app, "list-games-group")?;
     }
     app.pick[0] = 0;
-    app.genre = Some("racing".into());
+    app.key(Key::Select);
+    save(&mut app, "filter")?;
+    app.view = View::List;
+    app.filter[0] = Some("racing".into());
     save(&mut app, "list-games-racing")?;
-    app.genre = None;
+    app.filter[0] = None;
+    app.key(Key::L2);
+    save(&mut app, "system")?;
+    app.view = View::List;
     let ids: Vec<String> = match ids.is_empty() {
         true => app.index.ports.first().map(|p| p.id.clone()).into_iter().collect(),
         false => ids.to_vec(),
@@ -1358,6 +2175,10 @@ pub fn shots(store: Store, dir: &std::path::Path, ids: &[String]) -> Result<(), 
         title: "Installing Mario Kart 64".into(),
         step: Some(Step::Download { done: 600 << 10, total: 1381855 }),
     };
+    app.log = vec![
+        (0, 0, "LINK OPEN".into()),
+        (0, 1, "DOWNLOAD 600.0 KB / 1.3 MB".into()),
+    ];
     save(&mut app, "busy")?;
     Ok(())
 }
@@ -1368,8 +2189,13 @@ mod tests {
     use crate::index::Port;
 
     fn app(ports: &[(&str, &str, &[&str])]) -> App {
-        let dir = std::env::temp_dir().join(format!("portstore-ui-{}", std::process::id()));
+        // A card of its own each: tests run side by side and keep settings.
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = N.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("portstore-ui-{}-{n}", std::process::id()));
+        std::fs::create_dir_all(dir.join("home")).unwrap();
         let mut app = App::new(Store::open(dir.clone(), dir.join("home")));
+        app.look = Look::default();
         app.index.ports = ports
             .iter()
             .map(|(name, group, cats)| Port {
@@ -1405,7 +2231,7 @@ mod tests {
             ("Rewind", "", &["app"]),
         ]);
         assert_eq!(names(&app), ["Blips", "# Miyoo64 (N64)", "Mario Kart 64", "Super Mario 64", "---", "Zork"]);
-        app.genre = Some("racing".into());
+        app.filter[0] = Some("racing".into());
         assert_eq!(names(&app), ["# Miyoo64 (N64)", "Mario Kart 64"]);
         app.tab = Tab::Apps;
         assert_eq!(names(&app), ["Rewind"]);
@@ -1457,14 +2283,107 @@ mod tests {
     }
 
     #[test]
-    fn select_goes_through_the_genres_of_games() {
-        let mut app = app(&[("A", "", &["racing"]), ("B", "", &["arcade"]), ("C", "", &["app"])]);
-        let mut seen = Vec::new();
-        for _ in 0..3 {
-            app.key(Key::Select);
-            seen.push(app.genre.clone());
-        }
-        assert_eq!(seen, [Some("arcade".into()), Some("racing".into()), None]);
+    fn select_opens_the_filter_and_a_pick_sets_it() {
+        let mut app = app(&[("A", "", &["racing"]), ("B", "", &["arcade"]), ("R", "", &["racing"]), ("C", "", &["app"])]);
+        app.key(Key::Select);
+        assert_eq!(
+            app.choices(),
+            [Choice::All(3), Choice::Category("arcade".into(), 1), Choice::Category("racing".into(), 2)]
+        );
+        assert!(matches!(app.view, View::Filter { at: 0 }));
+        app.key(Key::Down);
+        app.key(Key::Down);
+        app.key(Key::A);
+        assert_eq!(app.filter[0].as_deref(), Some("racing"));
+        assert!(matches!(app.view, View::List));
+        assert_eq!(names(&app), ["A", "R"]);
+        // It opens on the filter in force; B closes it as it was.
+        app.key(Key::Select);
+        assert!(matches!(app.view, View::Filter { at: 2 }));
+        app.key(Key::Up);
+        app.key(Key::B);
+        assert_eq!(app.filter[0].as_deref(), Some("racing"));
+        app.key(Key::Select);
+        app.key(Key::Up);
+        app.key(Key::Up);
+        app.key(Key::A);
+        assert_eq!(app.filter[0], None, "all again");
+    }
+
+    #[test]
+    fn development_builds_show_only_when_asked_for() {
+        let mut app = app(&[("A", "", &["action"]), ("A Dev", "", &["action"])]);
+        app.index.ports[1].dev = true;
+        assert_eq!(names(&app), ["A"]);
+        app.key(Key::Select);
+        let choices = app.choices();
+        assert_eq!(choices.last(), Some(&Choice::Dev(1)));
+        // Down past the line, to the development builds.
+        app.key(Key::Up);
+        assert!(matches!(app.view, View::Filter { at: 3 }), "{:?}", app.view);
+        app.key(Key::A);
+        assert!(app.look.dev);
+        assert!(matches!(app.view, View::Filter { .. }), "stays open");
+        app.key(Key::B);
+        assert_eq!(names(&app), ["A", "A Dev"]);
+    }
+
+    #[test]
+    fn the_system_window_turns_the_theme_and_keeps_it() {
+        let mut app = app(&[("A", "", &["x"])]);
+        app.key(Key::L2);
+        app.key(Key::Right);
+        assert_eq!(app.look.theme, "amber");
+        app.key(Key::Left);
+        app.key(Key::Left);
+        assert_eq!(app.look.theme, "classic");
+        assert_eq!(app.effects(), Effects::Off, "the classic look plays no tube");
+        app.key(Key::Down);
+        app.key(Key::Right);
+        assert_eq!(app.look.effects, Effects::Calm);
+        assert_eq!(Look::load(&app.store.card.home).theme, "classic");
+        app.key(Key::B);
+        assert!(matches!(app.view, View::List));
+    }
+
+    #[test]
+    fn a_change_of_screen_is_played_on_the_tube() {
+        let mut app = app(&[("A", "", &["x"])]);
+        let list = app.sig();
+        app.key(Key::R1);
+        assert_eq!(fx_between(&list, &app.sig()), Some(Fx::Tear));
+        app.key(Key::L1);
+        app.key(Key::A);
+        assert_eq!(fx_between(&list, &app.sig()), Some(Fx::Roll));
+        let page = app.sig();
+        app.key(Key::A);
+        assert_eq!(fx_between(&page, &app.sig()), Some(Fx::Blip), "a window over the page");
+        app.view = View::List;
+        app.under.clear();
+        let list = app.sig();
+        app.key(Key::L2);
+        app.key(Key::Right);
+        assert_eq!(fx_between(&list, &app.sig()), Some(Fx::Degauss));
+    }
+
+    #[test]
+    fn a_jobs_log_keeps_one_line_per_kind_of_step() {
+        let mut app = app(&[("A", "", &["x"])]);
+        app.note(0, "LINK OPEN".into());
+        app.note(1, "DOWNLOAD 1 / 3".into());
+        app.note(1, "DOWNLOAD 2 / 3".into());
+        app.note(2, "VERIFY".into());
+        let lines: Vec<&str> = app.log.iter().map(|l| l.2.as_str()).collect();
+        assert_eq!(lines, ["LINK OPEN", "DOWNLOAD 2 / 3", "VERIFY"]);
+    }
+
+    #[test]
+    fn a_key_during_the_boot_screen_only_skips_it() {
+        let mut app = app(&[("A", "", &["x"]), ("B", "", &["x"])]);
+        app.boot = Some(app.now);
+        app.key(Key::Down);
+        assert!(app.boot.is_none());
+        assert_eq!(app.pick[0], 0);
     }
 
     #[test]
@@ -1526,5 +2445,28 @@ mod tests {
             app.key(Key::Down);
         }
         assert!(matches!(app.view, View::Details { scroll, .. } if scroll <= 1), "{:?}", app.view);
+    }
+
+    #[test]
+    fn every_screen_draws_in_every_theme_and_size() {
+        let mut app = app(&[("A", "G", &["x"]), ("B", "", &["app"])]);
+        app.still = true;
+        for (w, h) in [(W, H), (752, 560)] {
+            let mut c = Canvas::new(w, h);
+            for (theme, _) in theme::THEMES {
+                app.look.theme = theme.into();
+                for view in [
+                    View::List,
+                    View::Details { id: "a".into(), scroll: 0 },
+                    View::Filter { at: 0 },
+                    View::System { at: 1 },
+                    View::Message { title: "T".into(), text: "x ".repeat(400) },
+                    View::Busy { title: "T".into(), step: Some(Step::Check), stoppable: true },
+                ] {
+                    app.view = view;
+                    app.draw(&mut c);
+                }
+            }
+        }
     }
 }

@@ -32,6 +32,7 @@ elif [ -f "$here/site/index.json" ]; then
 fi
 cp "$here/LICENSE" "$app/licenses/PortStore.txt"
 cp "$here/assets/DejaVu_License.txt" "$app/licenses/DejaVu.txt"
+cp "$here/assets/VT323_License.txt" "$app/licenses/VT323.txt"
 (cd "$here/app" && cargo metadata --format-version 1 --filter-platform armv7-unknown-linux-gnueabihf) |
     python3 -I "$here/tools/crate_licenses.py" > "$app/licenses/rust-crates.txt"
 cat > "$app/licenses/cacert.txt" <<'TXT'

@@ -33,3 +33,28 @@ devices download the file from its author's release.
 
 Once merged, the catalog is rebuilt and the port is in Port Store on every device at its next
 start. How it all works: [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+
+# Adding a porter's own catalog
+
+A porter who publishes their games from their own site, with a catalog in the format of
+[Mixtape](https://github.com/snyderman3000/mixtape) (`manifest.json`: each port's `name`,
+`version`, `url` of a zip laid out for the card's root, `sha256`, `size`, `keep`…), needs no
+recipe per game: one **source** file in `recipes/sources/` brings all of them.
+
+```json
+{
+  "name": "slop.kitchen",
+  "manifest": "https://slop.kitchen/mixtape/manifest.json"
+}
+```
+
+- `name` is shown on each port's page as its source; `manifest` is the catalog's https address.
+- `"dev": true` for a catalog of development builds: its ports are hidden until the user ticks
+  development builds in the filter.
+- Each port's id is its name in lower case with dashes (`LAST LIGHT` → `last-light`); it must
+  not be the id of a recipe or of another catalog's port.
+- Any other `version` in the catalog is an update on the devices, whatever it looks like; the
+  file is checked against the catalog's `sha256` and `size`.
+
+The same check runs on a pull request (`python3 index/check_recipes.py recipes/sources/<name>.json`
+locally): every port of the catalog is built, and what each gives is listed.

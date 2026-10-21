@@ -9,5 +9,5 @@
   "status": "playable",
   "assets": "free",
   "porter": ["l0st0npl4net"],
-  "about": "This app: installs and updates ports from their authors' own releases. After an update, close Port Store and start it again."
+  "about": "This app: installs and updates ports from their authors' own releases, on a terminal of its own (L2: theme and effects). It updates itself and starts again."
 }

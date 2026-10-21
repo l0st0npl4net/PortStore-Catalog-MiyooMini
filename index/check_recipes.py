@@ -5,8 +5,9 @@ pull request, so a recipe can be judged without building it by hand.
     python3 index/check_recipes.py recipes/ports/foo.json [...]   # markdown on stdout
 
 Each recipe is checked for its fields, then built like index/build.py does (its
-release found and downloaded, its layout planned, its pictures made). Exit status 1
-when one fails.
+release found and downloaded, its layout planned, its pictures made). A source
+(recipes/sources/*.json, a porter's catalog in Mixtape's format) is read and each of
+its ports built the same way. Exit status 1 when one fails.
 """
 import json
 import re
@@ -108,9 +109,36 @@ def report(entry):
     return "\n".join(lines)
 
 
+def check_source(path, ids, catalog, gh, cache, site, out):
+    """A source's ports, each built: how many fail."""
+    failed = 0
+    for recipe in build.source_recipes([path]):
+        name = recipe.get("name", recipe["id"])
+        taken = [f for f in ids.get(recipe["id"], []) if Path(f).resolve() != Path(path).resolve()]
+        if "_error" not in recipe and taken:
+            recipe["_error"] = f"id {recipe['id']} is taken by {', '.join(taken)}"
+        if "_error" in recipe:
+            out.append(f"❌ {name}: {recipe['_error']}")
+            failed += 1
+            continue
+        try:
+            warnings = []
+            entry = build.entry(recipe, catalog, gh, cache, site, warnings)
+            dev = " (development build)" if recipe.get("_dev") else ""
+            out += [f"✅ **{entry['name']}**{dev}, id `{entry['id']}`", report(entry)]
+            out += [f"- ⚠️ {w['warning']}" for w in warnings]
+        except Exception as e:  # what the catalog build would stop at, said plainly
+            out.append(f"❌ {name}: the build stops here: {e}")
+            failed += 1
+    out.append("")
+    return failed
+
+
 def main(paths):
     all_ids = {}
     for p in sorted(Path("recipes").rglob("*.json")):
+        if p.parent.name == "sources":
+            continue
         try:
             all_ids.setdefault(json.loads(p.read_text(encoding="utf-8")).get("id"), []).append(str(p))
         except (ValueError, AttributeError):
@@ -124,6 +152,9 @@ def main(paths):
         site.mkdir()
         for path in paths:
             out.append(f"### `{path}`")
+            if Path(path).parent.name == "sources":
+                failed += check_source(path, all_ids, catalog, gh, cache, site, out)
+                continue
             try:
                 recipe = json.loads(Path(path).read_text(encoding="utf-8"))
             except (OSError, ValueError) as e:

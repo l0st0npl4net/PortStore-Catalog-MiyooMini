@@ -5,11 +5,16 @@ Install, update and remove ports right on a Miyoo Mini, Mini Plus, Mini v4 or Mi
 
 ![Games](docs/screenshots/games.png) ![A port's page](docs/screenshots/port.png)
 
-- **62 ports and apps**, including all 12 native N64 games of
+- **63 ports and apps**, including all 12 native N64 games of
   [Miyoo64](https://github.com/mr-finster/miyoo64) (Mario Kart 64, Super Mario 64, Ocarina
-  of Time, GoldenEye 007…), Undertale, Fallout 1 and 2, Half-Life, Tomb Raider, OpenRCT2 and
-  apps like Moonlight, Syncthing or Better WiFi.
-- **Games** and **Apps** tabs, genres, pictures, newest first; install several ports at once.
+  of Time, GoldenEye 007…), Undertale, Fallout 1 and 2, Half-Life, Tomb Raider, OpenRCT2,
+  LAST LIGHT from [slop.kitchen](https://slop.kitchen) and apps like Moonlight, Syncthing or
+  Better WiFi; development builds of slop.kitchen's games when you ask for them.
+- **A terminal on a picture tube:** green, amber, ice, white or red phosphor (or the classic
+  look), scan lines and glow, the tube switching on and off, flicker and tearing as screens
+  change.
+- **Games** and **Apps** tabs, a filter by category, pictures, newest first; install several
+  ports at once.
 - Games go to their own system, **Games → MiyooPorts**, next to your consoles.
 - **Updates** of the ports, and of Port Store itself, are offered as soon as their authors
   publish them; the number of updates shows under Port Store's name in Apps.
@@ -47,8 +52,9 @@ release over it once.
 | A | open a port; on its page: install, update or reinstall |
 | X | list: mark a port (Start installs the marked ones); page: remove |
 | Start | list: install the marked ports, one after another; page: move your files found in `import` into place |
-| Select | Games: next genre; Updates: update all |
+| Select | Games, Apps: the filter (a category, development builds); Updates: update all |
 | R2 | newest releases first / A to Z |
+| L2 | the system window: theme, effects, pictures, development builds |
 | Y | list: download the newest catalog again; page: check your files again |
 | B | back; on the list: quit |
 
@@ -56,11 +62,37 @@ release over it once.
   apps; **Installed** what Port Store installed; **More** ports Port Store cannot install yet,
   with a link to their page.
 - A port's page shows its picture, version, size, what it is, and what you bring for it, checked
-  on the card: ✓ found, ✗ missing, ! another version of the game's ROM.
+  on the card: `[OK]` found, `[--]` missing, `[!!]` another version of the game's ROM.
+- **The filter** (Select): a window with every category and how many ports it has; pick one,
+  or "all" again. Below them, **development builds** (untested builds of the newest code, from
+  catalogs that publish them): ticked, they show in the lists, marked `DEV`, next to the
+  released games.
 - **Several at once:** mark ports with X in the list, then Start installs them one after
   another, and tells at the end what was installed, what not and why.
 - **Removing** a port takes away the files Port Store put on the card. Your saves, settings and
   game files stay.
+
+## The screen
+
+![Filter](docs/screenshots/filter.png) ![System](docs/screenshots/system.png)
+
+Port Store looks like a terminal on an old monitor. **L2** opens the system window (Left /
+Right change a setting, B closes it; settings are kept):
+
+- **Theme:** green (P1), amber (P3), ice, white (P4) or red phosphor, or **classic** (Port
+  Store 1.0's look, without the tube). Your own colours: in `App/PortStore/settings.json`, add
+  `"colors": {"fg": "#33ff77", "bg": "#020b05"}` and pick the theme **custom**.
+- **Effects:** **full** (scan lines, glow and afterglow; the tube switching on and off; tearing,
+  rolling and flicker as screens change; while you use it, a slow band of light rolling down,
+  a blinking cursor and a glitch now and then), **calm** (the light and the changes' flicker,
+  nothing moving on its own) or **off**.
+- **Pictures:** in the screen's light (dithered in its shades) or in their own colours.
+- **Development builds:** shown or hidden, as in the filter.
+
+![Amber](docs/screenshots/amber.png) ![Classic](docs/screenshots/classic.png)
+
+At start Port Store types what it finds (card, catalog, installed ports) while it downloads
+the catalog; any key skips it. A job shows its event log, one line per step with its time.
 
 ## MiyooPorts
 
@@ -99,8 +131,8 @@ put the files in place yourself: the page says where (Y checks again).
 
 ## Updates
 
-- The catalog is built again every day from the ports' releases, and Port Store downloads it
-  each time it starts. A port with a newer release shows in the **Updates** tab; **Select**
+- The catalog is built again every day from the ports' releases (and from the porters' own
+  catalogs, such as slop.kitchen's), and Port Store downloads it each time it starts. A port with a newer release shows in the **Updates** tab; **Select**
   there updates them all.
 - The number of updates shows under Port Store's name in **Apps** (after Port Store has run
   once since they came out).
@@ -141,8 +173,9 @@ Files stay in `downloads` after installing: delete them to free space.
 - Port Store writes `App/PortStore/cache/portstore.log`; OnionOS's import of ports writes
   `Roms/PORTS/import.log`.
 - "The secure connection failed": check the date and time (Clock app).
-- The footer says "offline": the catalog could not be downloaded (Wi-Fi off or out of reach);
-  Port Store works with the catalog it has.
+- The status line says "LINK OFFLINE": the catalog could not be downloaded (Wi-Fi off or out
+  of reach); Port Store works with the catalog it has.
+- The screen feels slow or the effects tire your eyes: L2, Effects **calm** or **off**.
 
 ## Adding a port
 
@@ -156,6 +189,10 @@ A port gets in with a recipe in a pull request, checked automatically: see
 - [Producdevity/MiyooMini-Ports](https://github.com/Producdevity/MiyooMini-Ports): the
   catalog of Mini ports; Port Store takes its categories, status, notes and pictures, and
   lists its other entries under More.
+- [slop.kitchen](https://slop.kitchen) and the LAST LIGHT authors: LAST LIGHT and the
+  development builds of their games, from their own catalog, with its pictures and notes.
+- [VT323](https://fonts.google.com/specimen/VT323) by Peter Hull (The VT323 Project Authors):
+  the terminal's font.
 - Every port's author, whose releases Port Store installs, and
   [OnionOS](https://github.com/OnionUI/Onion).
 
@@ -163,8 +200,8 @@ A port gets in with a recipe in a pull request, checked automatically: see
 
 Port Store and its recipes are under the [MIT License](LICENSE). The ports it installs keep
 their authors' own licenses: Port Store does not host them, the Mini downloads each from its
-author's release. The font, certificates and Rust crates it ships with have their own licenses,
-in `App/PortStore/licenses`.
+author's release. The fonts (VT323 and DejaVu Sans), certificates and Rust crates it ships
+with have their own licenses, in `App/PortStore/licenses`.
 
 ---
 
@@ -212,8 +249,11 @@ Only the ports' pictures are published with the index (`img/`: 48×48 for the li
 | `map` | `[from, to]` prefixes for releases laid out otherwise (`["Games/", "Roms/PORTS/Games/"]`); the first match wins, the rest is left out |
 | `skip` | card paths not installed though the release has them |
 | `shortcut` | `{ "launch": "Roms/PORTS/Games/X/launch.sh", "image": "Roms/PORTS/Imgs/X.png" }`: how the game starts from MiyooPorts, when its own shortcut does not do (OpenRCT2's) |
-| `keep` | files of the release the user changes (settings): installed once, then never overwritten or removed (prefix if it ends in `/`). Files the release does not have (saves, game data) are never touched anyway |
+| `keep` | files of the release the user changes (settings): installed once, then never overwritten or removed (a folder if it ends in `/`; `*` and `?` match within a folder's names, `App/X/settings.*`). Files the release does not have (saves, game data) are never touched anyway |
 | `needs` | what the user brings: `what`, `hint`, `check` (paths that exist once it is in place), or a ROM by `sha1` looked for in `search` (`n64`: any byte order; `title`: header title, to tell another version of the same game). Game data checks are also read from the release's OnionOS shortcuts |
+
+Porters' own catalogs in Mixtape's format come in through `recipes/sources/` instead, one file
+per catalog: see [CONTRIBUTING.md](CONTRIBUTING.md#adding-a-porters-own-catalog).
 
 Releases may be zip, tar, tar.gz or 7z (the build reads 7z with py7zr, the device unpacks it
 with OnionOS's 7-Zip). A recipe failing in two builds in a row opens (or updates) the issue

@@ -4,8 +4,10 @@
 For each recipe (recipes/**/*.json) it finds the newest release of the port's GitHub
 repository with a matching file, downloads that file, checks what is inside and which
 part of it goes onto the SD card, and writes the file's address, size and SHA-256 with
-the install rules. Catalog entries without a recipe (Producdevity/MiyooMini-Ports
-ports.json) are listed as "manual": a link only.
+the install rules. Porters' own catalogs in Mixtape's format (recipes/sources/*.json
+says where) give their ports the same way, each from the file the catalog names.
+Catalog entries without a recipe (Producdevity/MiyooMini-Ports ports.json) are listed
+as "manual": a link only.
 
 Standard library only. GITHUB_TOKEN, when set, lifts the API limit (60 requests an hour
 without it).
@@ -372,10 +374,21 @@ def roots(files):
     return sorted(out)
 
 
+def keeps(rule, path):
+    """As the device's index::keeps: a folder's rule when it ends in '/', a pattern
+    when it has '*' (any characters but '/') or '?' (one), else that file."""
+    if rule.endswith("/"):
+        return path.startswith(rule)
+    if "*" not in rule and "?" not in rule:
+        return path == rule
+    pattern = "".join("[^/]*" if c == "*" else "[^/]" if c == "?" else re.escape(c) for c in rule)
+    return re.fullmatch(pattern, path) is not None
+
+
 def marks(files, keep):
     """A file of the port's in each of its folders (not one the user keeps): all on
     the card, the port is there."""
-    kept = lambda f: any(f.startswith(k) if k.endswith("/") else f == k for k in keep)
+    kept = lambda f: any(keeps(k, f) for k in keep)
     out = []
     for root in roots(files):
         mine = sorted(f for f in files if f.startswith(root) and not kept(f))
@@ -389,6 +402,8 @@ def load_recipes():
     recipe has too, comes with the reason it fails (`_error`), the rest still build."""
     out = []
     for path in sorted((ROOT / "recipes").rglob("*.json")):
+        if path.parent == SOURCES:
+            continue
         rel = str(path.relative_to(ROOT))
         try:
             r = json.loads(path.read_text(encoding="utf-8"))
@@ -406,6 +421,62 @@ def load_recipes():
         others = [f for f in files[r["id"]] if f != r["_file"]]
         if others and "_error" not in r:
             r["_error"] = f"id {r['id']} is also the id of {', '.join(others)}"
+    return out
+
+
+SOURCES = ROOT / "recipes" / "sources"
+# A Mixtape catalog's fields Port Store takes, with their types.
+MIXTAPE = {"name": str, "version": str, "url": str, "sha256": str, "size": int, "keep": "texts"}
+
+
+def source_recipes(paths=None, previous=None, today=None):
+    """Recipes for the ports of porters' own catalogs (Mixtape's format), one source
+    file each in recipes/sources: {"name", "manifest", "dev"?}. A port's id is its
+    name's slug; its date the day its version was first seen. A catalog that cannot
+    be read comes as one recipe with `_error` and `_source`: its ports are kept from
+    the previous index."""
+    if paths is None:
+        paths = sorted(SOURCES.glob("*.json")) if SOURCES.is_dir() else []
+    previous = previous or {}
+    today = today or datetime.date.today().isoformat()
+    out = []
+    for path in map(Path, paths):
+        rel = str(path.resolve().relative_to(ROOT)) if path.resolve().is_relative_to(ROOT) else str(path)
+        src = {}
+        try:
+            src = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(src, dict) or not all(isinstance(src.get(k), str) for k in ("name", "manifest")):
+                src = {}
+                raise ValueError("a source has `name` and `manifest` (texts)")
+            if not isinstance(src.get("dev", False), bool):
+                raise ValueError("`dev` is true or false")
+            if not src["manifest"].startswith("https://"):
+                raise ValueError("`manifest` is an https address")
+            manifest = load_json(src["manifest"])
+            listed = manifest.get("ports") if isinstance(manifest, dict) else None
+            if not isinstance(listed, list):
+                raise ValueError(f"{src['manifest']}: no `ports` list")
+        except Exception as e:  # noqa: BLE001  (a host down, a bad file: this source only)
+            out.append({"id": path.stem, "_file": rel, "_error": f"source: {e}", "_source": src.get("name", path.stem),
+                        "_dev": src.get("dev") is True, "_whole": True})
+            continue
+        for m in listed:
+            name = m.get("name") if isinstance(m, dict) else None
+            rid = slug(name) if isinstance(name, str) else ""
+            recipe = {"id": rid or f"{path.stem}-entry", "_file": rel, "_source": src["name"],
+                      "_dev": src.get("dev", False)}
+            if not isinstance(m, dict) or not rid or not isinstance(m.get("url"), str) \
+                    or not isinstance(m.get("version"), str) or not m["version"].strip():
+                recipe["_error"] = "a catalog entry has `name`, `version` and `url`"
+            elif bad := [k for k, kind in MIXTAPE.items() if k in m and not typed(m[k], kind)]:
+                recipe["_error"] = f"wrong type of {', '.join(bad)}"
+            elif not m["url"].startswith("https://"):
+                recipe["_error"] = "the file's address is not https"
+            else:
+                old = previous.get(rid, {})
+                recipe.update({"_mixtape": m, "name": name, "keep": m.get("keep", []),
+                               "_date": old.get("date", today) if old.get("version") == m["version"] else today})
+            out.append(recipe)
     return out
 
 
@@ -523,16 +594,33 @@ def check_port(p):
         need(k not in p or typed(p[k], kind), f"`{k}` type")
 
 
+def mixtape_release(recipe):
+    """A Mixtape catalog's entry as a release: its version, the day it was first seen,
+    and its file (checked against the catalog's SHA-256 and size when it gives them)."""
+    m = recipe["_mixtape"]
+    name = urllib.parse.unquote(urllib.parse.urlsplit(m["url"]).path.rsplit("/", 1)[-1])
+    asset = {"name": name, "browser_download_url": m["url"], "size": m.get("size"),
+             **({"digest": "sha256:" + m["sha256"].lower()} if m.get("sha256") else {})}
+    return {"tag_name": m["version"], "published_at": recipe["_date"]}, asset, []
+
+
 def entry(recipe, catalog, gh, cache, site, warnings=None):
     warnings = [] if warnings is None else warnings
-    meta = clean_meta(dict(catalog.get(recipe.get("catalog"), {})))
-    meta["url"] = meta.pop("upstream", None) or f"https://github.com/{recipe['github']}"
+    if "_mixtape" in recipe:
+        meta = clean_meta({k: v for k, v in recipe["_mixtape"].items() if k in META_TYPES})
+        meta["url"] = recipe["_mixtape"].get("upstream") if isinstance(recipe["_mixtape"].get("upstream"), str) else ""
+    else:
+        meta = clean_meta(dict(catalog.get(recipe.get("catalog"), {})))
+        meta["url"] = meta.pop("upstream", None) or f"https://github.com/{recipe['github']}"
     for k in META + ("group", "about"):
         if k in recipe:
             meta[k] = recipe[k]
     if "name" not in meta:
         raise ValueError("no name (no catalog entry and none in the recipe)")
-    rel, asset, passed = pick_release(gh.releases(recipe["github"]), recipe)
+    if "_mixtape" in recipe:
+        rel, asset, passed = mixtape_release(recipe)
+    else:
+        rel, asset, passed = pick_release(gh.releases(recipe["github"]), recipe)
     if not asset:
         raise ValueError("no release with a matching file")
     if passed:
@@ -572,6 +660,7 @@ def entry(recipe, catalog, gh, cache, site, warnings=None):
         "needs": needs,
         "install": {"files": len(files), "bytes": size, "roots": roots(files),
                     "marks": marks(files, recipe.get("keep", []))},
+        **({"source": recipe["_source"]} if "_source" in recipe else {}),
     }
     if skipped:
         out["skipped"] = skipped
@@ -641,7 +730,7 @@ def main():
         if attempt == 2:
             # Without it, ports failing now would drop out and "failing since" restart.
             raise SystemExit(f"previous index {args.previous}: {error}")
-    previous = {p["id"]: p for p in previous_index.get("ports", [])}
+    previous = {p["id"]: p for p in previous_index.get("ports", []) + previous_index.get("dev", [])}
     # A recipe failing since an earlier build (not just now: a host down for a minute).
     previous_failed = {f["id"]: f for f in previous_index.get("failed", [])}
     now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -649,28 +738,42 @@ def main():
     site = Path(args.out).parent
     site.mkdir(parents=True, exist_ok=True)
 
-    ports, failed, warnings = [], [], []
-    recipes = [r for r in load_recipes() if not args.only or r["id"] in args.only]
+    ports, dev, failed, warnings = [], [], [], []
+    recipes = load_recipes()
+    sourced = source_recipes(previous=previous)
+    # One id, one port: a source's port of a recipe's id (or another source's) fails.
+    taken = {}
+    for r in recipes + sourced:
+        taken.setdefault(r["id"], []).append(r["_file"])
+    for r in sourced:
+        others = [f for f in taken[r["id"]] if f != r["_file"]]
+        if others and "_error" not in r:
+            r["_error"] = f"id {r['id']} is also the id of {', '.join(others)}"
+    recipes = [r for r in recipes + sourced if not args.only or r["id"] in args.only]
     for recipe in recipes:
+        shelf = dev if recipe.get("_dev") else ports
         try:
             if "_error" in recipe:
                 raise ValueError(recipe["_error"])
             p = entry(recipe, catalog, gh, cache, site, warnings)
             log(f"ok    {p['id']:24} {p['version']:20} {p['install']['files']:4} files"
                 + (f"  skipped {p['skipped']}" if p.get("skipped") else ""))
-            ports.append(p)
+            shelf.append(p)
         # Whatever one release or recipe throws (a cut-off download, a broken 7z, an
         # odd zip method, a wrong field type) fails that recipe, not the build.
         except Exception as e:  # noqa: BLE001
             e = f"{type(e).__name__}: {e}" if not isinstance(e, ValueError) else e
             since = previous_failed.get(recipe["id"], {}).get("since", now)
             failed.append({"id": recipe["id"], "file": recipe["_file"], "error": str(e), "since": since})
-            if recipe["id"] in previous:
-                ports.append(previous[recipe["id"]])
-                keep_pictures(previous[recipe["id"]], args.previous, site)
-                log(f"FAIL  {recipe['id']:24} {e} (kept {previous[recipe['id']]['version']})")
-            else:
-                log(f"FAIL  {recipe['id']:24} {e}")
+            # A source that could not be read keeps all its ports of before.
+            kept = [previous[recipe["id"]]] if recipe["id"] in previous else []
+            if recipe.get("_whole"):
+                kept = [p for p in previous_index.get("dev" if recipe["_dev"] else "ports", [])
+                        if p.get("source") == recipe["_source"]]
+            for old in kept:
+                shelf.append(old)
+                keep_pictures(old, args.previous, site)
+            log(f"FAIL  {recipe['id']:24} {e}" + (f" (kept {', '.join(o['id'] + ' ' + o['version'] for o in kept)})" if kept else ""))
 
     covered = {r.get("catalog") for r in recipes} | {p["name"] for p in ports}
     manual = [
@@ -686,6 +789,8 @@ def main():
         "format": FORMAT,
         "generated": now,
         "ports": sorted(ports, key=lambda p: p["name"].lower()),
+        # Development builds apart: Port Store before 1.1 does not read this list.
+        "dev": sorted(dev, key=lambda p: p["name"].lower()),
         "manual": manual,
         "failed": failed,
         "warnings": warnings,
@@ -696,7 +801,7 @@ def main():
         return 1
     out.write_text(json.dumps(index, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
     # Pictures no entry names any more (from an earlier build in the same folder) go.
-    named = {item.get(k) for item in index["ports"] + manual for k in SIZES}
+    named = {item.get(k) for item in index["ports"] + dev + manual for k in SIZES}
     for old in (site / "img").glob("*.png"):
         if f"img/{old.name}" not in named:
             old.unlink()
@@ -706,7 +811,7 @@ def main():
                 old.unlink()
     for w in warnings:
         log(f"WARN  {w['id']:24} {w['warning']}")
-    log(f"{len(ports)} ports, {len(manual)} manual, {len(failed)} failed, {len(warnings)} warnings -> {out}")
+    log(f"{len(ports)} ports, {len(dev)} dev, {len(manual)} manual, {len(failed)} failed, {len(warnings)} warnings -> {out}")
     return 0
 
 

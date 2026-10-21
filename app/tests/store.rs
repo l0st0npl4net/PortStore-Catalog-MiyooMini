@@ -1289,3 +1289,89 @@ fn the_updates_line_in_apps_is_written_whole() {
     assert!(!card.join("App/PortStore/config.json.part").exists());
     assert!(fs::read_to_string(&config).unwrap().contains("2 updates"));
 }
+
+#[test]
+fn another_catalogs_port_takes_any_other_version_as_an_update() {
+    let card = temp("source-version");
+    let src = temp("source-version-src");
+    let s = store(&card);
+    let z = src.join("Game-1.0.zip");
+    zip(&z, &[("Game-1.0/App/Game/launch.sh", b"x", false)]);
+    let mut p = port("game", &z, "dev-g67fc8b8");
+    p.source = "slop.kitchen".into();
+    s.install(&p, &AtomicBool::new(false), &mut |_| {}).unwrap();
+    assert_eq!(s.state(&p), State::Installed("dev-g67fc8b8".into()));
+    // A hash that reads as a smaller number is still the newer build.
+    p.version = "dev-g05fca8b".into();
+    assert_eq!(s.state(&p), State::Update("dev-g67fc8b8".into()));
+}
+
+#[test]
+fn development_builds_come_from_their_own_list() {
+    let entry = |id: &str| {
+        format!(
+            r#"{{"id": "{id}", "name": "{id}", "version": "1", "take": ["App/"],
+               "file": {{"url": "https://x/a.zip", "name": "a.zip", "size": 1, "sha256": "", "kind": "zip"}},
+               "install": {{"files": 1, "bytes": 1}}}}"#
+        )
+    };
+    let text = format!(r#"{{"format": 1, "ports": [{}], "dev": [{}]}}"#, entry("a"), entry("a-dev"));
+    let index = Index::parse(&text).unwrap();
+    let dev: Vec<(&str, bool)> = index.ports.iter().map(|p| (p.id.as_str(), p.dev)).collect();
+    assert_eq!(dev, [("a", false), ("a-dev", true)]);
+}
+
+#[test]
+fn keep_rules_with_patterns_cover_files_of_one_folder() {
+    use portstore::index::keeps;
+    let dir = "Roms/PORTS/Games/LastLight/";
+    assert!(keeps("Roms/PORTS/Games/LastLight/meta.*", &format!("{dir}meta.json")));
+    assert!(keeps("Roms/PORTS/Games/LastLight/run.?", &format!("{dir}run.1")));
+    assert!(!keeps("Roms/PORTS/Games/LastLight/meta.*", &format!("{dir}meta/x.json")), "* stops at /");
+    assert!(!keeps("Roms/PORTS/Games/LastLight/meta.*", &format!("{dir}other.json")));
+    assert!(keeps("Roms/PORTS/Games/LastLight/", &format!("{dir}a/b")));
+    assert!(keeps("App/Game/settings.cfg", "App/Game/settings.cfg"));
+    assert!(!keeps("App/Game/settings.cfg", "App/Game/settings.cfg2"));
+}
+
+#[test]
+fn an_update_keeps_files_a_pattern_keeps() {
+    let card = temp("keep-pattern");
+    let src = temp("keep-pattern-src");
+    let s = store(&card);
+    let z = src.join("Game-1.0.zip");
+    zip(&z, &[("Game-1.0/App/Game/launch.sh", b"1", false), ("Game-1.0/App/Game/meta.json", b"shipped", false)]);
+    let mut p = port("game", &z, "1.0");
+    p.keep = vec!["App/Game/meta.*".into()];
+    s.install(&p, &AtomicBool::new(false), &mut |_| {}).unwrap();
+    fs::write(card.join("App/Game/meta.json"), "my progress").unwrap();
+    let z2 = src.join("Game-2.0.zip");
+    zip(&z2, &[("Game-1.0/App/Game/launch.sh", b"2", false), ("Game-1.0/App/Game/meta.json", b"new", false)]);
+    let p2 = Port { file: port("game", &z2, "2.0").file, version: "2.0".into(), ..p.clone() };
+    s.install(&p2, &AtomicBool::new(false), &mut |_| {}).unwrap();
+    assert_eq!(fs::read_to_string(card.join("App/Game/meta.json")).unwrap(), "my progress");
+    s.remove("game", Some(&p2)).unwrap();
+    assert!(card.join("App/Game/meta.json").exists(), "kept on removal");
+}
+
+#[test]
+fn an_app_released_as_a_shortcut_for_ports_starts_from_miyooports() {
+    let card = temp("app-shortcut");
+    let src = temp("app-shortcut-src");
+    let s = store(&card);
+    let z = src.join("lab.zip");
+    zip(
+        &z,
+        &[
+            ("Roms/PORTS/Games/Lab/launch.sh", b"./lab", false),
+            ("Roms/PORTS/Shortcuts/Tools/Sound Lab.port", b"#!/bin/sh\ncd /mnt/SDCARD/Roms/PORTS/Games/Lab && ./launch.sh\n", false),
+        ],
+    );
+    let mut p = port("sound-lab", &z, "1");
+    p.name = "Sound Lab".into();
+    p.strip = String::new();
+    p.categories = vec!["app".into()];
+    let rec = s.install(&p, &AtomicBool::new(false), &mut |_| {}).unwrap();
+    assert!(rec.shortcuts, "{:?}", rec.files);
+    assert!(card.join("Roms/MiyooPorts/Sound Lab.sh").exists());
+}

@@ -87,7 +87,8 @@ enum Start {
 }
 
 /// The launchers (and their pictures) MiyooPorts gets for `port`, installed as
-/// `files`: (path, bytes). Apps get none.
+/// `files`: (path, bytes). Apps get none, unless released as a shortcut for Ports
+/// (hidden like a game's): MiyooPorts is then the only place they start from.
 /// `taken`: the files of other installed ports (in any case): a launcher of the same
 /// name gets the port's id after its name, so neither overwrites the other.
 pub fn launchers(
@@ -98,7 +99,7 @@ pub fn launchers(
     apps: &[AppLaunch],
     taken: &std::collections::BTreeSet<String>,
 ) -> Vec<(String, Vec<u8>)> {
-    if port.is_app() {
+    if port.is_app() && !files.iter().any(|f| f.starts_with(&format!("{HIDDEN}Shortcuts/"))) {
         return Vec::new();
     }
     let mut starts: Vec<(String, Start, Option<String>)> = Vec::new();

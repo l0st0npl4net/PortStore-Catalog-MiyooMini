@@ -38,10 +38,7 @@ pub struct Installed {
 
 impl Installed {
     pub fn kept(&self, path: &str) -> bool {
-        self.keep.iter().any(|k| match k.ends_with('/') {
-            true => path.starts_with(k.as_str()),
-            false => path == k,
-        })
+        self.keep.iter().any(|k| crate::index::keeps(k, path))
     }
 }
 

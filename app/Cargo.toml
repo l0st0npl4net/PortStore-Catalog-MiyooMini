@@ -1,8 +1,8 @@
 [package]
 name = "portstore"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2021"
-description = "Install ports on the Miyoo Mini (Onion) from a catalog of their own releases"
+description = "Install ports on the Miyoo Mini (OnionOS) from a catalog of their own releases"
 license = "MIT"
 
 [dependencies]
