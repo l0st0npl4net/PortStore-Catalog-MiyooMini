@@ -235,9 +235,8 @@ struct Sig {
 fn fx_between(a: &Sig, b: &Sig) -> Option<Fx> {
     if a.theme != b.theme {
         Some(Fx::Degauss)
-    } else if a.page != b.page {
-        Some(Fx::Roll)
-    } else if a.tab != b.tab {
+    } else if a.page != b.page || a.tab != b.tab {
+        // A port's page opens as another tab does: torn bands and flicker.
         Some(Fx::Tear)
     } else if a.over != b.over || a.filter != b.filter || a.newest != b.newest || a.dev != b.dev {
         Some(Fx::Blip)
@@ -661,7 +660,7 @@ impl App {
         // A window opening (a job's for its frame only, then its spinner).
         let opening = if over == 2 { OPEN * 2.0 } else { 1.2 };
         if self.booting() || (over != 0 && self.age() < opening) {
-            Some(Duration::from_millis(33))
+            Some(crt::FRAME)
         } else if over == 2 {
             Some(Duration::from_millis(125))
         } else if self.blinking() {
@@ -2457,6 +2456,9 @@ pub fn run(store: Store) -> Result<(), String> {
     crt.start(Fx::PowerOn, start);
     crt.wake(start);
     let mut sig = app.sig();
+    // Frame times while something moves, said in the log now and then (to see how
+    // near 60 a second the Mini comes).
+    let mut stats = (0u32, Duration::ZERO, Duration::ZERO, Instant::now());
     'shown: loop {
         let now = Instant::now();
         app.now = now;
@@ -2471,6 +2473,13 @@ pub fn run(store: Store) -> Result<(), String> {
         }
         if changed || crt.next_frame(now).is_some() {
             fb.show(crt.frame(&canvas.px, changed, now));
+            let took = now.elapsed();
+            stats = (stats.0 + 1, stats.1 + took, stats.2.max(took), stats.3);
+            if stats.3.elapsed() > Duration::from_secs(10) && stats.0 >= 30 {
+                let (n, total, most, _) = stats;
+                eprintln!("portstore: frames: {n}, {:?} each, {most:?} at most", total / n);
+                stats = (0, Duration::ZERO, Duration::ZERO, Instant::now());
+            }
         }
         let wait = [app.next_draw(), crt.next_frame(now), Some(Duration::from_millis(100))]
             .into_iter()
@@ -2878,7 +2887,7 @@ mod tests {
         assert_eq!(fx_between(&list, &app.sig()), Some(Fx::Tear));
         app.key(Key::L1);
         app.key(Key::A);
-        assert_eq!(fx_between(&list, &app.sig()), Some(Fx::Roll));
+        assert_eq!(fx_between(&list, &app.sig()), Some(Fx::Tear), "a page opens as a tab does");
         let page = app.sig();
         app.key(Key::A);
         assert_eq!(fx_between(&page, &app.sig()), Some(Fx::Blip), "a window over the page");

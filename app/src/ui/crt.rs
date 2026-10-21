@@ -1,7 +1,7 @@
 //! A picture tube's light over the drawn frame: scan lines, the glow around what is
 //! lit, a darker rim and rounded corners, the phosphor's afterglow when the picture
-//! changes, and the tube's moments: switching on and off, losing and finding its sync,
-//! a degauss. All of it in whole frames of 0x00RRGGBB, drawn only while something
+//! changes, and the tube's moments: switching on and off, losing its sync for a
+//! moment, a degauss. All of it in whole frames of 0x00RRGGBB, drawn only while something
 //! moves.
 use std::time::{Duration, Instant};
 
@@ -14,10 +14,9 @@ pub enum Fx {
     PowerOn,
     /// The picture folding into a line, the line into a dot.
     PowerOff,
-    /// Bands of the picture torn sideways, the light flickering: another tab.
+    /// Bands of the picture torn sideways, the light flickering: another tab, a
+    /// port's page.
     Tear,
-    /// The picture rolling down into place, its sync bar passing: another page.
-    Roll,
     /// The picture wobbling as the tube is degaussed: another theme.
     Degauss,
     /// A short flicker: a window opening or closing, a filter.
@@ -32,7 +31,6 @@ impl Fx {
             Fx::PowerOn => 900,
             Fx::PowerOff => 520,
             Fx::Tear => 240,
-            Fx::Roll => 320,
             Fx::Degauss => 760,
             Fx::Blip => 120,
             Fx::Glitch => 130,
@@ -42,8 +40,12 @@ impl Fx {
 
 /// How long the screen keeps moving on its own (the band, the cursor) after a press.
 const AWAKE: Duration = Duration::from_secs(40);
-/// The phosphor's afterglow: what is left of a pixel's light a frame later, of 256.
-const AFTERGLOW: u32 = 118;
+/// A frame while the tube plays: 60 a second. The slow band needs no more than 30.
+pub const FRAME: Duration = Duration::from_micros(16_667);
+const BAND_FRAME: Duration = Duration::from_micros(33_333);
+/// The phosphor's afterglow: what is left of a pixel's light a frame later, of 256
+/// (at 60 frames a second: about half of it in 1/30 s).
+const AFTERGLOW: u32 = 174;
 /// The glow's strength, of 256.
 const GLOW: u32 = 120;
 /// How often the glow is made at most.
@@ -89,6 +91,9 @@ pub struct Crt {
     awake_until: Option<Instant>,
     next_glitch: Option<Instant>,
     epoch: Instant,
+    /// Threads a frame's passes are shared between: the cores, unless one does it
+    /// faster (measured when the tube is made).
+    threads: usize,
 }
 
 impl Crt {
@@ -116,9 +121,32 @@ impl Crt {
             awake_until: None,
             next_glitch: None,
             epoch: Instant::now(),
+            threads: 1,
         };
         crt.masks();
+        crt.threads = crt.fastest();
         crt
+    }
+
+    /// One thread or all the cores, whichever lights a frame faster here: threads
+    /// cost little on the Mini, much under an emulator.
+    fn fastest(&mut self) -> usize {
+        let cores = cores();
+        if cores < 2 {
+            return 1;
+        }
+        let mut time = |threads: usize| {
+            self.threads = threads;
+            let start = Instant::now();
+            for _ in 0..3 {
+                self.light();
+            }
+            start.elapsed()
+        };
+        let (one, all) = (time(1), time(cores));
+        let pick = if all < one { cores } else { 1 };
+        eprintln!("portstore: tube: {pick} thread(s) ({one:?} on one, {all:?} on {cores}, for 3 frames)");
+        pick
     }
 
     /// Scan lines (every other row darker), a rim darker towards the corners, and the
@@ -186,16 +214,16 @@ impl Crt {
             return None;
         }
         if self.fx.is_some_and(|(fx, at)| now < at + fx.length()) || !self.settled {
-            return Some(Duration::from_millis(33));
+            return Some(FRAME);
         }
         if self.glow_due {
             return Some((self.glow_at + GLOW_EVERY).saturating_duration_since(now));
         }
         if self.awake(now) {
-            return Some(Duration::from_millis(50));
+            return Some(BAND_FRAME);
         }
         // One more after the band has gone, so it is not left on the screen.
-        self.awake_until.map(|_| Duration::from_millis(50))
+        self.awake_until.map(|_| BAND_FRAME)
     }
 
     pub fn playing(&self, now: Instant) -> bool {
@@ -248,28 +276,33 @@ impl Crt {
 
     /// The phosphor's afterglow: a pixel lit before fades out over a few frames.
     fn afterglow(&mut self, content: &[u32]) {
-        let mut settled = true;
-        for (p, &c) in self.persist.iter_mut().zip(content) {
-            if *p == c {
-                continue;
-            }
-            let ch = |s: u32| {
-                let (old, new) = ((*p >> s) & 0xff, (c >> s) & 0xff);
-                let faded = (old * AFTERGLOW) >> 8;
-                // Close enough is the new light: the afterglow ends.
-                if faded > new + 6 {
-                    faded
-                } else {
-                    new
+        let settled = std::sync::atomic::AtomicBool::new(true);
+        by_rows(self.threads, &mut self.persist, self.w, |row, part| {
+            let content = &content[row * self.w..row * self.w + part.len()];
+            let mut still = true;
+            for (p, &c) in part.iter_mut().zip(content) {
+                if *p == c {
+                    continue;
                 }
-            };
-            let next = ch(16) << 16 | ch(8) << 8 | ch(0);
-            if next != c {
-                settled = false;
+                let ch = |s: u32| {
+                    let (old, new) = ((*p >> s) & 0xff, (c >> s) & 0xff);
+                    let faded = (old * AFTERGLOW) >> 8;
+                    // Close enough is the new light: the afterglow ends.
+                    if faded > new + 6 {
+                        faded
+                    } else {
+                        new
+                    }
+                };
+                let next = ch(16) << 16 | ch(8) << 8 | ch(0);
+                still &= next == c;
+                *p = next;
             }
-            *p = next;
-        }
-        self.settled = settled;
+            if !still {
+                settled.store(false, std::sync::atomic::Ordering::Relaxed);
+            }
+        });
+        self.settled = settled.into_inner();
     }
 
     /// The glow around what is lit: the picture at a quarter of its size, blurred,
@@ -333,22 +366,31 @@ impl Crt {
             }
         }
         // And to full height, as strong as the glow is and the rim lets it be.
-        for y in 0..h {
-            let pos = (y as i32 * 64 - 96).max(0);
-            let (y0, f) = ((pos >> 8) as usize, (pos & 255) as u32);
-            let (ra, rb) = (y0.min(sh - 1) * w, (y0 + 1).min(sh - 1) * w);
-            for x in 0..w {
-                let v = blend(self.wide[ra + x], self.wide[rb + x], f);
-                self.halo[y * w + x] = dim(v, (GLOW * self.rim[y * w + x] as u32) >> 8);
+        let (wide, rim) = (&self.wide, &self.rim);
+        by_rows(self.threads, &mut self.halo, w, |first, part| {
+            for (k, row) in part.chunks_mut(w).enumerate() {
+                let y = first + k;
+                let pos = (y as i32 * 64 - 96).max(0);
+                let (y0, f) = ((pos >> 8) as usize, (pos & 255) as u32);
+                let (ra, rb) = (y0.min(sh - 1) * w, (y0 + 1).min(sh - 1) * w);
+                for (x, halo) in row.iter_mut().enumerate() {
+                    let v = blend(wide[ra + x], wide[rb + x], f);
+                    *halo = dim(v, (GLOW * rim[y * w + x] as u32) >> 8);
+                }
             }
-        }
+        });
     }
 
     /// The picture's light: the afterglow under scan lines and rim, and the glow.
     fn light(&mut self) {
-        for (((lit, &p), &scan), &halo) in self.lit.iter_mut().zip(&self.persist).zip(&self.scan).zip(&self.halo) {
-            *lit = add(dim(p, scan as u32), halo);
-        }
+        let (persist, scan, halo, w) = (&self.persist, &self.scan, &self.halo, self.w);
+        by_rows(self.threads, &mut self.lit, w, |row, part| {
+            let at = row * w;
+            let n = part.len();
+            for (((lit, &p), &scan), &halo) in part.iter_mut().zip(&persist[at..at + n]).zip(&scan[at..at + n]).zip(&halo[at..at + n]) {
+                *lit = add(dim(p, scan as u32), halo);
+            }
+        });
     }
 
     /// What each row shows now, or none when the lit picture is shown as it is.
@@ -406,16 +448,6 @@ impl Crt {
                     Fx::PowerOff => line(&mut rows, 2.0, (256.0 * (1.0 - (u - 0.80) / 0.20)) as u32),
                     Fx::Tear => self.tear(&mut rows, 1.0 - u),
                     Fx::Glitch => self.tear(&mut rows, (1.0 - u) * 0.35),
-                    Fx::Roll => {
-                        let off = (h as f32 * 0.35 * (1.0 - ease_out(u))) as i32;
-                        let gain = (256.0 * (1.0 - 0.18 * (1.0 - u))) as u32;
-                        for (y, row) in rows.iter_mut().enumerate() {
-                            let src = (y as i32 + off).rem_euclid(h);
-                            // The sync bar, where the picture's bottom meets its top.
-                            let seam = (y as i32 - (h - off)).abs() < 7 && off > 0;
-                            *row = Row { src: Some(src as usize), dx: 0, gain: if seam { 40 } else { gain }, white: 0, line: (0, 0) };
-                        }
-                    }
                     Fx::Degauss => {
                         let k = (1.0 - u).powi(2);
                         let pulse = 1.0 + 0.25 * k * (u * 30.0).sin();
@@ -477,18 +509,24 @@ impl Crt {
     }
 
     fn compose(&mut self, rows: &[Row]) {
-        let w = self.w;
+        let (w, lit, beam) = (self.w, &self.lit, self.beam);
+        by_rows(self.threads, &mut self.out, w, |first, part| {
+            Crt::compose_rows(lit, w, beam, &rows[first..first + part.len() / w], part)
+        });
+    }
+
+    fn compose_rows(lit: &[u32], w: usize, beam: u32, rows: &[Row], out_rows: &mut [u32]) {
         for (y, row) in rows.iter().enumerate() {
-            let out = &mut self.out[y * w..(y + 1) * w];
+            let out = &mut out_rows[y * w..(y + 1) * w];
             let Some(src) = row.src else {
-                let beam = scale(self.beam, row.gain, 0);
+                let beam = scale(beam, row.gain, 0);
                 for (x, p) in out.iter_mut().enumerate() {
                     let x = x as i32;
                     *p = if x >= row.line.0 && x < row.line.1 { beam } else { 0 };
                 }
                 continue;
             };
-            let from = &self.lit[src * w..(src + 1) * w];
+            let from = &lit[src * w..(src + 1) * w];
             if row.dx == 0 && row.gain == 256 && row.white == 0 {
                 out.copy_from_slice(from);
                 continue;
@@ -514,6 +552,39 @@ impl Crt {
         self.light();
         &self.lit
     }
+}
+
+/// The cores the frame's rows are shared between (the Mini has two);
+/// PORTSTORE_THREADS=1 keeps to one.
+fn cores() -> usize {
+    static CORES: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *CORES.get_or_init(|| {
+        let cores = std::thread::available_parallelism().map_or(1, |n| n.get().min(4));
+        std::env::var("PORTSTORE_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or(cores).clamp(1, 4)
+    })
+}
+
+/// `f(first row, rows)` over `px` (rows `w` wide), the rows shared out between the
+/// cores: a frame's passes take about half the time on the Mini.
+fn by_rows<T: Send>(threads: usize, px: &mut [T], w: usize, f: impl Fn(usize, &mut [T]) + Sync) {
+    let rows = px.len() / w.max(1);
+    let n = threads.min(rows.max(1));
+    if n < 2 {
+        return f(0, px);
+    }
+    let per = rows.div_ceil(n) * w;
+    std::thread::scope(|s| {
+        let mut parts = px.chunks_mut(per).enumerate();
+        // The first part here, the others each on a thread of its own.
+        let first = parts.next();
+        for (i, part) in parts {
+            let f = &f;
+            s.spawn(move || f(i * per / w, part));
+        }
+        if let Some((_, part)) = first {
+            f(0, part);
+        }
+    });
 }
 
 /// Each channel `s` of 256 (at most 256).
@@ -645,7 +716,7 @@ mod sheet {
         let (w, h) = (img.w, img.h);
         let frame: Vec<u32> = img.px.iter().map(|p| p & 0xff_ffff).collect();
         let points = [0.04, 0.15, 0.25, 0.4, 0.6, 0.9];
-        let fxs = [Fx::PowerOn, Fx::PowerOff, Fx::Tear, Fx::Roll, Fx::Degauss, Fx::Blip];
+        let fxs = [Fx::PowerOn, Fx::PowerOff, Fx::Tear, Fx::Degauss, Fx::Blip, Fx::Glitch];
         let (cw, ch) = (w / 2, h / 2);
         let mut sheet = vec![0x202020u32; cw * points.len() * ch * fxs.len()];
         let sw = cw * points.len();

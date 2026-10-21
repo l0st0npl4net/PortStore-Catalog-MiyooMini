@@ -115,8 +115,8 @@ Right change a setting, B closes it; settings are kept):
 - **Theme:** green (P1), amber (P3), ice, white (P4) or red phosphor, or **classic** (Port
   Store 1.0's look, without the tube). Your own colours: in `App/PortStore/settings.json`, add
   `"colors": {"fg": "#33ff77", "bg": "#020b05"}` and pick the theme **custom**.
-- **Effects:** **full** (scan lines, glow and afterglow; the tube switching on and off; tearing,
-  rolling and flicker as screens change; while you use it, a slow band of light rolling down,
+- **Effects:** **full** (scan lines, glow and afterglow, at up to 60 frames a second; the tube
+  switching on and off; tearing and flicker as screens and pages change; while you use it, a slow band of light rolling down,
   a blinking cursor and a glitch now and then), **calm** (the light and the changes' flicker,
   nothing moving on its own) or **off**.
 - **Pictures:** in the screen's light (dithered in its shades), in their own colours, or

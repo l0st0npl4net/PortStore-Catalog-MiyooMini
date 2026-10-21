@@ -289,16 +289,16 @@ temporary file; unknown or broken values fall back to the defaults.
 
 **The tube** (`Crt`, skipped for the classic look and `off`): each frame drawn goes through
 
-1. the afterglow: a pixel's light fades over a few frames (118/256 a frame) instead of going
-   out, so a moved pick leaves a short trail;
+1. the afterglow: a pixel's light fades over a few frames (174/256 a frame at 60 a second,
+   about half in 1/30 s) instead of going out, so a moved pick leaves a short trail;
 2. the glow: the frame at a quarter size, blurred twice, brought back to full size, added at
    120/256 and darker towards the rim; made when the frame changes, at most every 90 ms;
 3. scan lines (every other row at 196/256), a rim darker towards the corners, rounded corners;
 4. the moment playing, row by row (which row of the picture, torn by how much, how bright,
    how washed out): `PowerOn` (a line opening into the picture, too bright, settling),
    `PowerOff` (the picture folding into a line, the line into a dot: on leaving and before
-   starting a new Port Store), `Tear` (another tab), `Roll` (another page, the sync bar
-   passing), `Degauss` (another theme), `Blip` (a window, a filter, the sort), `Glitch` (now and
+   starting a new Port Store), `Tear` (another tab, a port's page opening or closing),
+   `Degauss` (another theme), `Blip` (a window, a filter, the sort), `Glitch` (now and
    then while used, with full effects).
 
 With full effects the screen also moves on its own for 40 s after a press: a band of light
@@ -306,12 +306,27 @@ rolling down, the light's flicker, the cursor blinking. Which moment a change ge
 `fx_between` of two `Sig`s (page, window, tab, filter, sort, theme). `App::since` is when the
 screen last changed, for windows opening (a line growing into the frame) and text typed.
 
-The loop draws only when something changed or moves: the app says when it wants to be drawn
-again (`next_draw`: typing 33 ms, a job's spinner 125 ms, the cursor 530 ms), the tube when its
-next frame is due (`next_frame`: 33 ms while playing or fading, 50 ms for the band), else it
-waits for a key or a job's message (100 ms). Packed-pixel arithmetic keeps a frame cheap: on
-the build machine 4.4 ms with the glow made, 1.6 ms a fading frame, 1 ms a torn one; the ARM
-build under qemu 9.7, 7.5 and 4.6 ms.
+The loop draws only when something changed or moves, at most 60 frames a second
+(`crt::FRAME`, 16.7 ms): the app says when it wants to be drawn again (`next_draw`: typing
+and windows opening every frame, a job's spinner 125 ms, the cursor 530 ms), the tube when
+its next frame is due (`next_frame`: every frame while playing or fading, 33 ms for the band),
+else it waits for a key or a job's message (100 ms). A frame slower than 16.7 ms just comes
+later: the moments are timed by the clock, not by frames.
+
+What keeps a frame cheap:
+
+- packed-pixel arithmetic (two channels in one multiplication);
+- the glow made at most every 90 ms, its last frame when that time comes;
+- the per-pixel passes (afterglow, light, the moment's rows, the glow's last pass) shared
+  between the cores by rows (`by_rows`, `std::thread::scope`). Whether that is faster is
+  measured when the tube is made (`Crt::fastest`: three frames on one thread, three on all)
+  and said in the log, `portstore: tube: 2 thread(s) (…)`; under qemu threads are dear and
+  one is taken. `PORTSTORE_THREADS=1` keeps to one.
+
+While something moves, the log says every 10 s how long frames took (`portstore: frames:
+N, … each, … at most`): how near 60 a second the Mini comes. On the build machine a frame
+takes under 1 ms (four threads); the ARM build under qemu, on one thread, 9.8 ms with the
+glow made, 7.3 ms a fading frame, about 4.6 ms a torn one.
 
 ### Threads
 
