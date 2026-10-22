@@ -1,0 +1,12 @@
+{
+  "id": "love-mini",
+  "name": "love-mini",
+  "github": "l0st0npl4net/love-mini",
+  "asset": "^love-mini-[\\d.]+\\.zip$",
+  "take": ["Roms/PORTS/"],
+  "categories": ["app"],
+  "status": "playable",
+  "assets": "free",
+  "porter": ["l0st0npl4net"],
+  "about": "LÖVE 11 for the Mini: runs games made with LÖVE without a port for each (the love-mini games in the catalog install it first). Its own check and diagnose entries test picture, sound and buttons."
+}
