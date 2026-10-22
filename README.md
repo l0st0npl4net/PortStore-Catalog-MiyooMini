@@ -293,6 +293,7 @@ Only the ports' pictures are published with the index (`img/`: 48×48 for the li
 | `keep` | files of the release the user changes (settings): installed once, then never overwritten or removed (a folder if it ends in `/`; `*` and `?` match within a folder's names, `App/X/settings.*`). Files the release does not have (saves, game data) are never touched anyway |
 | `needs` | what the user brings: `what`, `hint`, `check` (paths that exist once it is in place), or a ROM by `sha1` looked for in `search` (`n64`: any byte order; `title`: header title, to tell another version of the same game); with `check`, `search` names folders where the file may already be on the card (another port's), offered to move into place. Game data checks are also read from the release's OnionOS shortcuts |
 | `requires` | ids of other ports it runs on (a game on love-mini): installed first, and kept while it is installed |
+| `folder` | a folder of MiyooPorts its launchers go into, instead of the list's top (love-mini and its games: `LÖVE`) |
 
 Porters' own catalogs in Mixtape's format come in through `recipes/sources/` instead, one file
 per catalog: see [CONTRIBUTING.md](CONTRIBUTING.md#adding-a-porters-own-catalog).

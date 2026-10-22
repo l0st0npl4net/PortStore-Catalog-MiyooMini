@@ -226,6 +226,10 @@ impl Card {
         }
         if changed {
             miyooports::reset_list(&self.root, miyooports::DIR);
+            let folder = miyooports::file_name(&port.folder);
+            if !folder.is_empty() {
+                miyooports::reset_list(&self.root, &format!("{}/{folder}", miyooports::DIR));
+            }
         }
         Ok(changed)
     }
@@ -472,8 +476,13 @@ impl Card {
             // App, Roms/PORTS/Games, a Shortcuts category, MiyooPorts' own folders:
             // the card's or other ports'.
             let n = d.components().count();
+            // A folder of MiyooPorts' list (a runtime's games) goes with its last launcher.
+            let list_folder = n == 3
+                && d.starts_with(miyooports::DIR)
+                && !d.starts_with(miyooports::HIDDEN.trim_end_matches('/'))
+                && !d.ends_with("Imgs");
             let shared = n == 1
-                || d.starts_with("Roms") && n <= 3
+                || d.starts_with("Roms") && n <= 3 && !list_folder
                 || d.starts_with("Roms/PORTS/Shortcuts") && n <= 4
                 || d.starts_with(miyooports::HIDDEN.trim_end_matches('/')) && n <= 5;
             if !shared {

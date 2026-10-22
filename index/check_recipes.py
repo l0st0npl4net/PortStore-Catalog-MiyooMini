@@ -21,13 +21,13 @@ import build  # noqa: E402  (index/build.py, next to this file)
 FIELDS = {
     "id", "catalog", "name", "group", "categories", "status", "assets", "porter", "about", "url",
     "image", "notes", "github", "asset", "tag", "prerelease", "strip", "take", "into", "map", "skip",
-    "keep", "needs", "shortcut", "requires",
+    "keep", "needs", "shortcut", "requires", "folder",
 }
 NEED_FIELDS = {"what", "hint", "check", "sha1", "search", "n64", "title"}
 
 
 TEXT_FIELDS = {"id", "catalog", "name", "group", "status", "assets", "about", "url", "image", "notes",
-               "github", "asset", "tag", "strip", "into"}
+               "github", "asset", "tag", "strip", "into", "folder"}
 LIST_FIELDS = {"categories", "porter", "take", "skip", "keep", "requires"}
 
 
@@ -85,6 +85,9 @@ def problems(recipe, path, ids):
             out.append(f"unknown fields in `needs`: {', '.join(sorted(set(need) - NEED_FIELDS))}")
         if not need.get("what"):
             out.append("each of `needs` says `what`")
+    folder = recipe.get("folder", "")
+    if isinstance(folder, str) and (any(c in folder for c in "/\\\0") or folder.startswith(".") or folder == "Imgs"):
+        out.append("`folder`: a folder name of MiyooPorts (no `/`, not Imgs or hidden)")
     for req in recipe.get("requires", []) if isinstance(recipe.get("requires", []), list) else []:
         if not (isinstance(req, str) and re.fullmatch(r"[a-z0-9][a-z0-9-]*", req)):
             out.append("`requires`: ids of other ports (lower-case letters, digits and dashes)")

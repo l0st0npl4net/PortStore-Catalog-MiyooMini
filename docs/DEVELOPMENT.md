@@ -121,9 +121,10 @@ only secret is the automatic `GITHUB_TOKEN`.
 Some porters publish their games from their own site, with a catalog in the format of
 [Mixtape](https://github.com/snyderman3000/mixtape) (another store for OnionOS): `{"name",
 "ports": [{"name", "version", "url", "sha256", "size", "keep", "categories", "status",
-"assets", "porter", "upstream", "image", "notes", "requires", "needs"}]}`, each `url` a zip laid
-out for the card's root (`requires` and `needs` are Port Store's additions: what it runs on, and
-for a game the user owns what they bring, as in a recipe: `what`, `hint`, `check`, ...). A
+"assets", "porter", "upstream", "image", "notes", "requires", "needs", "folder"}]}`, each `url` a zip laid
+out for the card's root (`requires`, `needs` and `folder` are Port Store's additions: what it
+runs on; for a game the user owns, what they bring, as in a recipe: `what`, `hint`, `check`,
+...; the folder of MiyooPorts its launcher goes into). A
 source file names one:
 
 ```json
@@ -219,6 +220,7 @@ is not a plain name), is left out and logged, the rest of the catalog stands. A 
 | `auto` | no recipe: the release goes onto the card as it is laid out (marked `AUTO`) |
 | `needs` | what the user brings: `what`, `hint`, `check`, `sha1`, `search`, `n64`, `title` |
 | `requires` | ids of ports it runs on (a game on love-mini): see "Ports on a runtime" |
+| `folder` | a folder of MiyooPorts (a name) its launchers go into, instead of the list's top; pictures stay in `Imgs/` (MainUI looks for them there by name) |
 | `install` | `files`, `bytes`, `roots`, `marks` |
 
 New fields must be optional on the device (`#[serde(default)]`), so older Port Stores keep
@@ -421,9 +423,10 @@ A system in Games of Port Store's own: `Emu/MiyooPorts/config.json` (`rompath`
 icons by file name). They are written by `miyooports::ensure_system` from files built into the
 program (`app/dist/miyooports/`, `assets/miyooports.png`).
 
-Each game gets `Roms/MiyooPorts/<Name>.sh` and `Roms/MiyooPorts/Imgs/<Name>.png` (a name
-another installed port's launcher has gets ` (<id>)` after it; a picture stays as it is while
-no new one is at hand):
+Each game gets `Roms/MiyooPorts/<Name>.sh` (`Roms/MiyooPorts/<folder>/<Name>.sh` for a port
+with a `folder`: love-mini and its games are in `LÖVE`; a folder goes with its last launcher)
+and `Roms/MiyooPorts/Imgs/<Name>.png` (a name another installed port's launcher has gets
+` (<id>)` after it; a picture stays as it is while no new one is at hand):
 
 - **release for Ports Collection:** its `Roms/PORTS/Shortcuts`, `Imgs`, `Manuals` go to
   `Roms/MiyooPorts/.ports/` (MainUI lists no name starting with a dot, so a game shows once);

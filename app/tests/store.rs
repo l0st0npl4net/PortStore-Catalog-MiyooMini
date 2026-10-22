@@ -1589,3 +1589,44 @@ fn a_file_another_port_of_the_game_kept_is_offered_to_move() {
     let have = needs::check(&card, &p, &mut roms, &mut |_| {});
     assert!(matches!(&have[0], Have::Found(_)));
 }
+
+#[test]
+fn a_port_with_a_folder_has_its_launchers_in_that_folder_of_miyooports() {
+    let card = temp("folder");
+    let src = temp("folder-src");
+    let s = store(&card);
+    let z = src.join("check.zip");
+    zip(
+        &z,
+        &[
+            ("Roms/PORTS/Games/love-mini/games/check/main.lua", b"--", false),
+            ("Roms/PORTS/Shortcuts/LOVE games/Check.port", b"GameDir=\"love-mini\"", false),
+            ("Roms/PORTS/Imgs/Check.png", b"PNG", false),
+        ],
+    );
+    let mut p = port("check", &z, "1.0");
+    p.strip = String::new();
+    p.keep = Vec::new();
+    p.folder = "LÖVE".into();
+    p.install.roots = vec!["Roms/PORTS/Games/love-mini/games/check/".into()];
+    p.install.marks = vec!["Roms/PORTS/Games/love-mini/games/check/main.lua".into()];
+    let cancel = AtomicBool::new(false);
+    s.install(&p, &cancel, &mut |_| {}).unwrap();
+    assert!(card.join("Roms/MiyooPorts/LÖVE/Game.sh").exists(), "{:?}", files_under(&card.join("Roms/MiyooPorts")));
+    assert!(!card.join("Roms/MiyooPorts/Game.sh").exists(), "not at the list's top");
+    assert!(card.join("Roms/MiyooPorts/Imgs/Game.png").exists(), "pictures where MainUI looks for them");
+
+    // the catalog moves it to the top: the repair moves its launcher, the folder goes
+    let mut top = p.clone();
+    top.folder = String::new();
+    s.repair(&Index { format: 1, ports: vec![top.clone()], ..Index::default() });
+    assert!(card.join("Roms/MiyooPorts/Game.sh").exists());
+    assert!(!card.join("Roms/MiyooPorts/LÖVE").exists(), "an emptied folder of the list goes");
+
+    // and back; removing the port takes the folder with its last launcher
+    s.repair(&Index { format: 1, ports: vec![p.clone()], ..Index::default() });
+    assert!(card.join("Roms/MiyooPorts/LÖVE/Game.sh").exists());
+    s.remove("check", Some(&p)).unwrap();
+    assert!(!card.join("Roms/MiyooPorts/LÖVE").exists());
+    assert!(card.join("Roms/MiyooPorts/Imgs").exists() || !card.join("Roms/MiyooPorts").exists());
+}

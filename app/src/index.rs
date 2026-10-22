@@ -73,6 +73,10 @@ pub struct Port {
     /// love-mini): installed first when they are not on the card.
     #[serde(default)]
     pub requires: Vec<String>,
+    /// A folder of MiyooPorts its launchers go into (a runtime's games together: "LÖVE"),
+    /// instead of the list's top.
+    #[serde(default)]
+    pub folder: String,
     pub install: Install,
     /// A development build (the catalog's "dev" list): listed only when asked for.
     #[serde(default)]
@@ -278,7 +282,10 @@ impl Port {
             paths.extend([sc.launch.as_str(), sc.image.as_str(), sc.dir.as_str()]);
         }
         let requires = self.requires.iter().all(|r| !r.is_empty() && r.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'));
-        id && name && requires && paths.into_iter().all(card_path)
+        // a name, not a path: MiyooPorts' Imgs and .ports are its own
+        let folder = self.folder.is_empty()
+            || (!self.folder.contains(['/', '\\', '\0']) && !self.folder.starts_with('.') && self.folder != "Imgs");
+        id && name && requires && folder && paths.into_iter().all(card_path)
     }
 
     pub fn owned(&self) -> bool {

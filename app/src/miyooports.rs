@@ -134,16 +134,23 @@ pub fn launchers(
         }
     }
 
+    // In the port's folder of MiyooPorts, if it has one (its pictures stay in Imgs/:
+    // MainUI looks for them there by name, whatever the folder).
+    let folder = file_name(&port.folder);
+    let at = |name: &str| match folder.is_empty() {
+        true => format!("{DIR}/{name}.sh"),
+        false => format!("{DIR}/{folder}/{name}.sh"),
+    };
     let mut out = Vec::new();
     for (name, start, image) in starts {
         let mut name = file_name(&name);
-        if taken.contains(&crate::install::fold(&format!("{DIR}/{name}.sh"))) {
+        if taken.contains(&crate::install::fold(&at(&name))) {
             name = file_name(&format!("{name} ({})", port.id));
         }
-        if name.is_empty() || out.iter().any(|(p, _): &(String, Vec<u8>)| p == &format!("{DIR}/{name}.sh")) {
+        if name.is_empty() || out.iter().any(|(p, _): &(String, Vec<u8>)| p == &at(&name)) {
             continue;
         }
-        out.push((format!("{DIR}/{name}.sh"), script(port, &name, &start).into_bytes()));
+        out.push((at(&name), script(port, &name, &start).into_bytes()));
         // The picture: the release's own for Ports, else the catalog's.
         // The picture: the release's own for Ports, else the catalog's, else the one
         // already there (a new catalog's picture not downloaded yet).

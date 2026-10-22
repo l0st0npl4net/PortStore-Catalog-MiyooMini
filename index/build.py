@@ -430,7 +430,7 @@ def load_recipes():
 SOURCES = ROOT / "recipes" / "sources"
 # A Mixtape catalog's fields Port Store takes, with their types.
 MIXTAPE = {"name": str, "version": str, "url": str, "sha256": str, "size": int, "keep": "texts", "requires": "texts",
-           "needs": list}
+           "needs": list, "folder": str}
 # What a catalog's need may say (as a recipe's: check_recipes.NEED_FIELDS), with its types.
 MIXTAPE_NEED = {"what": str, "hint": str, "check": "texts", "sha1": str, "search": "texts", "n64": bool, "title": str}
 
@@ -497,7 +497,7 @@ def source_recipes(paths=None, previous=None, today=None):
             else:
                 old = previous.get(rid, {})
                 recipe.update({"_mixtape": m, "name": name, "keep": m.get("keep", []), "requires": m.get("requires", []),
-                               "needs": m.get("needs", []),
+                               "needs": m.get("needs", []), **({"folder": m["folder"]} if m.get("folder") else {}),
                                "_date": old.get("date", today) if old.get("version") == m["version"] else today})
             out.append(recipe)
     return out
@@ -598,8 +598,10 @@ def check_port(p):
     def need(cond, what):
         if not cond:
             raise ValueError(f"index entry: {what}")
-    for k in ("id", "name", "version", "date", "strip", "into"):
+    for k in ("id", "name", "version", "date", "strip", "into", "folder"):
         need(isinstance(p.get(k, ""), str), f"`{k}` is text")
+    need(not any(c in p.get("folder", "") for c in "/\\\0") and not p.get("folder", "").startswith(".")
+         and p.get("folder") != "Imgs", "`folder` is a folder name of MiyooPorts")
     for k in ("take", "skip", "keep", "requires"):
         need(typed(p.get(k, []), TEXTS), f"`{k}` is a list of texts")
     need(all(isinstance(m, list) and len(m) == 2 and all(isinstance(x, str) for x in m) for m in p.get("map", [])),
@@ -774,7 +776,7 @@ def entry(recipe, catalog, gh, cache, site, warnings=None):
         },
         "strip": strip,
         "take": recipe.get("take", DEFAULT_TAKE),
-        **{k: recipe[k] for k in ("into", "map", "skip", "shortcut") if recipe.get(k)},
+        **{k: recipe[k] for k in ("into", "map", "skip", "shortcut", "folder") if recipe.get(k)},
         "keep": recipe.get("keep", []),
         "needs": needs,
         **({"requires": recipe["requires"]} if recipe.get("requires") else {}),
