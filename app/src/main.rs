@@ -44,6 +44,12 @@ fn main() -> ExitCode {
         Some("install") => each(&args[1..], |id| {
             let index = store.load_index();
             let port = index.port(id).ok_or(format!("{id}: not in the catalog"))?;
+            // what it runs on first
+            let first = store.requirements(&index, port).map_err(|m| format!("{id}: runs on {m}, not in the catalog"))?;
+            for need in &first {
+                let rec = store.install(need, &cancel, &mut |_| {}).map_err(|e| format!("{id}: {}: {e}", need.id))?;
+                println!("{}: installed {} (needed by {id})", need.id, rec.version);
+            }
             let mut last = String::new();
             let rec = store
                 .install(port, &cancel, &mut |step| {
@@ -64,6 +70,10 @@ fn main() -> ExitCode {
         }),
         Some("remove") => each(&args[1..], |id| {
             let index = store.load_index();
+            let users = store.required_by(&index, id);
+            if !users.is_empty() {
+                return Err(format!("{id}: needed by {}: remove them first", users.join(", ")));
+            }
             let rec = store.remove(id, index.port(id)).map_err(|e| format!("{id}: {e}"))?;
             println!("{id}: removed {} ({} files)", rec.version, rec.files.len());
             Ok(())

@@ -69,6 +69,10 @@ pub struct Port {
     pub keep: Vec<String>,
     #[serde(default)]
     pub needs: Vec<Need>,
+    /// Other ports of the catalog this one runs on (a game on a runtime such as
+    /// love-mini): installed first when they are not on the card.
+    #[serde(default)]
+    pub requires: Vec<String>,
     pub install: Install,
     /// A development build (the catalog's "dev" list): listed only when asked for.
     #[serde(default)]
@@ -273,7 +277,8 @@ impl Port {
         if let Some(sc) = &self.shortcut {
             paths.extend([sc.launch.as_str(), sc.image.as_str(), sc.dir.as_str()]);
         }
-        id && name && paths.into_iter().all(card_path)
+        let requires = self.requires.iter().all(|r| !r.is_empty() && r.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'));
+        id && name && requires && paths.into_iter().all(card_path)
     }
 
     pub fn owned(&self) -> bool {

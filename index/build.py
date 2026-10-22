@@ -361,14 +361,17 @@ def plan(members, recipe):
     return strip, files, size, sorted(skipped), origin
 
 
-def roots(files):
+def roots(files, nested=False):
     """The folders the port owns, App/<Name>/ (Emu/, RApp/) and Roms/PORTS/Games/<Name>/: how the
-    device tells a port put on the card by hand."""
+    device tells a port put on the card by hand. `nested`: a game on a runtime (one that
+    `requires` another) owns Roms/PORTS/Games/<Runtime>/games/<Name>/, not the runtime's folder."""
     out = set()
     for f in files:
         p = f.split("/")
         if p[0] in ("App", "Emu", "RApp") and len(p) > 2:
             out.add(f"{p[0]}/{p[1]}/")
+        elif nested and p[:3] == ["Roms", "PORTS", "Games"] and len(p) > 6 and p[4] == "games":
+            out.add("/".join(p[:6]) + "/")
         elif p[:3] == ["Roms", "PORTS", "Games"] and len(p) > 4:
             out.add("/".join(p[:4]) + "/")
     return sorted(out)
@@ -385,12 +388,12 @@ def keeps(rule, path):
     return re.fullmatch(pattern, path) is not None
 
 
-def marks(files, keep):
+def marks(files, keep, nested=False):
     """A file of the port's in each of its folders (not one the user keeps): all on
     the card, the port is there."""
     kept = lambda f: any(keeps(k, f) for k in keep)
     out = []
-    for root in roots(files):
+    for root in roots(files, nested):
         mine = sorted(f for f in files if f.startswith(root) and not kept(f))
         if mine:
             out.append(min(mine, key=lambda f: (f.count("/"), f)))
@@ -426,7 +429,24 @@ def load_recipes():
 
 SOURCES = ROOT / "recipes" / "sources"
 # A Mixtape catalog's fields Port Store takes, with their types.
-MIXTAPE = {"name": str, "version": str, "url": str, "sha256": str, "size": int, "keep": "texts"}
+MIXTAPE = {"name": str, "version": str, "url": str, "sha256": str, "size": int, "keep": "texts", "requires": "texts",
+           "needs": list}
+# What a catalog's need may say (as a recipe's: check_recipes.NEED_FIELDS), with its types.
+MIXTAPE_NEED = {"what": str, "hint": str, "check": "texts", "sha1": str, "search": "texts", "n64": bool, "title": str}
+
+
+def mixtape_needs(needs):
+    """A catalog entry's `needs` (a game the user brings: what, hint, check...) as a
+    recipe's, or the reason they are not."""
+    for n in needs:
+        if not isinstance(n, dict) or not isinstance(n.get("what"), str) or not n["what"]:
+            return "each of `needs` is an object that says `what`"
+        if bad := [k for k in n if k not in MIXTAPE_NEED or not typed(n[k], MIXTAPE_NEED[k])]:
+            return f"`needs`: unknown or mistyped {', '.join(bad)}"
+        paths = n.get("check", []) + n.get("search", [])
+        if not all(p and not p.startswith("/") and "\\" not in p and ".." not in p.split("/") for p in paths):
+            return "`needs`: paths are relative to the card, without `..`"
+    return None
 
 
 def source_recipes(paths=None, previous=None, today=None):
@@ -472,9 +492,12 @@ def source_recipes(paths=None, previous=None, today=None):
                 recipe["_error"] = f"wrong type of {', '.join(bad)}"
             elif not m["url"].startswith("https://"):
                 recipe["_error"] = "the file's address is not https"
+            elif reason := mixtape_needs(m.get("needs", [])):
+                recipe["_error"] = reason
             else:
                 old = previous.get(rid, {})
-                recipe.update({"_mixtape": m, "name": name, "keep": m.get("keep", []),
+                recipe.update({"_mixtape": m, "name": name, "keep": m.get("keep", []), "requires": m.get("requires", []),
+                               "needs": m.get("needs", []),
                                "_date": old.get("date", today) if old.get("version") == m["version"] else today})
             out.append(recipe)
     return out
@@ -577,7 +600,7 @@ def check_port(p):
             raise ValueError(f"index entry: {what}")
     for k in ("id", "name", "version", "date", "strip", "into"):
         need(isinstance(p.get(k, ""), str), f"`{k}` is text")
-    for k in ("take", "skip", "keep"):
+    for k in ("take", "skip", "keep", "requires"):
         need(typed(p.get(k, []), TEXTS), f"`{k}` is a list of texts")
     need(all(isinstance(m, list) and len(m) == 2 and all(isinstance(x, str) for x in m) for m in p.get("map", [])),
          "`map` is [from, to] pairs of texts")
@@ -715,7 +738,7 @@ def entry(recipe, catalog, gh, cache, site, warnings=None):
     if not asset:
         raise ValueError("no release with a matching file")
     if passed:
-        warnings.append({"id": recipe["id"], "file": recipe["_file"],
+        warnings.append({"id": recipe["id"], "file": recipe.get("_file", ""),
                          "warning": f"newer release {', '.join(passed)} has no file matching `asset`: "
                                     f"{rel['tag_name']} is used"})
     if not kind_of(asset["name"]):
@@ -731,7 +754,12 @@ def entry(recipe, catalog, gh, cache, site, warnings=None):
             raise ValueError(f"downloaded file does not match GitHub's digest {asset['digest']}")
     kind = sniff(path) or kind_of(asset["name"])
     strip, files, size, skipped, origin = plan(entries(path, kind), recipe)
-    needs = needs_of(recipe, shortcut_checks(path, kind, origin, files))
+    checks = shortcut_checks(path, kind, origin, files)
+    if recipe.get("requires"):
+        # the shortcut of a game on a runtime checks the runtime's files: those come with it
+        own = roots(files, True)
+        checks = [c for c in checks if any(c.startswith(r) for r in own)]
+    needs = needs_of(recipe, checks)
     out = {
         "id": recipe["id"],
         **{k: meta[k] for k in META + ("group", "about") if meta.get(k) not in (None, "", [])},
@@ -749,8 +777,9 @@ def entry(recipe, catalog, gh, cache, site, warnings=None):
         **{k: recipe[k] for k in ("into", "map", "skip", "shortcut") if recipe.get(k)},
         "keep": recipe.get("keep", []),
         "needs": needs,
-        "install": {"files": len(files), "bytes": size, "roots": roots(files),
-                    "marks": marks(files, recipe.get("keep", []))},
+        **({"requires": recipe["requires"]} if recipe.get("requires") else {}),
+        "install": {"files": len(files), "bytes": size, "roots": roots(files, bool(recipe.get("requires"))),
+                    "marks": marks(files, recipe.get("keep", []), bool(recipe.get("requires")))},
         **({"source": recipe["_source"]} if "_source" in recipe else {}),
     }
     if skipped:
@@ -873,6 +902,12 @@ def main():
         names = {r.get("catalog") for r in load_recipes()} | {p["name"] for p in ports + dev}
         ids = {r["id"] for r in recipes} | {p["id"] for p in ports + dev}
         ports += auto_entries(catalog, ids, names, gh, cache, site, previous, args.previous)
+    # a port that runs on another the index does not have cannot be installed: said so
+    have = {p["id"] for p in ports + dev}
+    for p in ports + dev:
+        for req in p.get("requires", []):
+            if req not in have:
+                warnings.append({"id": p["id"], "file": "", "warning": f"requires {req}, which is not in the index"})
     covered = {r.get("catalog") for r in recipes} | {p["name"] for p in ports}
     manual = [
         clean_meta({k: c[k] for k in ("name", "categories", "status", "assets", "notes", "porter", "image")

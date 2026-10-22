@@ -1501,3 +1501,91 @@ fn port_store_can_have_an_entry_of_its_own_in_miyooports() {
     set_self_entry(&card, false).unwrap();
     assert!(card.join("Roms/MiyooPorts/Port Store.sh").exists());
 }
+
+#[test]
+fn a_game_on_a_runtime_installs_the_runtime_first_and_keeps_it_while_needed() {
+    let card = temp("requires");
+    let src = temp("requires-src");
+    let s = store(&card);
+    let rt_zip = src.join("love-mini-0.3.zip");
+    zip(
+        &rt_zip,
+        &[
+            ("Roms/PORTS/Games/love-mini/run.sh", b"#!/bin/sh", false),
+            ("Roms/PORTS/Games/love-mini/bin/love", b"ELF", false),
+        ],
+    );
+    let game_zip = src.join("check-1.0.zip");
+    zip(&game_zip, &[("Roms/PORTS/Games/love-mini/games/check/game.love", b"PK", false)]);
+    let mut runtime = port("love-mini", &rt_zip, "0.3");
+    runtime.strip = String::new();
+    runtime.keep = Vec::new();
+    runtime.install.roots = vec!["Roms/PORTS/Games/love-mini/".into()];
+    runtime.install.marks = vec!["Roms/PORTS/Games/love-mini/run.sh".into()];
+    let mut game = port("check", &game_zip, "1.0");
+    game.strip = String::new();
+    game.keep = Vec::new();
+    game.requires = vec!["love-mini".into()];
+    game.install.roots = vec!["Roms/PORTS/Games/love-mini/games/check/".into()];
+    game.install.marks = vec!["Roms/PORTS/Games/love-mini/games/check/game.love".into()];
+    let index = Index { format: 1, ports: vec![runtime.clone(), game.clone()], ..Index::default() };
+
+    // what to install first: the runtime, while it is not on the card
+    let first = s.requirements(&index, &game).unwrap();
+    assert_eq!(first.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), ["love-mini"]);
+    let cancel = AtomicBool::new(false);
+    for p in first.iter().chain([&game]) {
+        s.install(p, &cancel, &mut |_| {}).unwrap();
+    }
+    assert!(card.join("Roms/PORTS/Games/love-mini/run.sh").exists());
+    assert!(card.join("Roms/PORTS/Games/love-mini/games/check/game.love").exists());
+    assert!(s.requirements(&index, &game).unwrap().is_empty(), "installed: nothing first");
+
+    // the runtime is needed while the game is on the card
+    assert_eq!(s.required_by(&index, "love-mini"), ["Game"]);
+    s.remove("check", Some(&game)).unwrap();
+    assert!(s.required_by(&index, "love-mini").is_empty());
+    assert!(card.join("Roms/PORTS/Games/love-mini/run.sh").exists(), "removing the game leaves the runtime");
+
+    // a requirement the catalog does not have
+    let mut orphan = game.clone();
+    orphan.requires = vec!["no-such-runtime".into()];
+    assert_eq!(s.requirements(&index, &orphan).unwrap_err(), "no-such-runtime");
+    // and a loop of requirements ends
+    let mut a = runtime.clone();
+    a.requires = vec!["check".into()];
+    let looped = Index { format: 1, ports: vec![a.clone(), game.clone()], ..Index::default() };
+    assert!(s.requirements(&looped, &game).is_ok());
+}
+
+#[test]
+fn a_file_another_port_of_the_game_kept_is_offered_to_move() {
+    let card = temp("elsewhere");
+    let home = card.join("App/PortStore");
+    fs::create_dir_all(card.join("Roms/PORTS/Games/Balatro")).unwrap();
+    fs::write(card.join("Roms/PORTS/Games/Balatro/balatro.EXE"), "MZ").unwrap();
+    let p = Port {
+        needs: vec![Need {
+            what: "Balatro.exe".into(),
+            check: vec![
+                "Roms/PORTS/Games/love-mini/games/balatro/Balatro.exe".into(),
+                "Roms/PORTS/Games/love-mini/games/balatro/Balatro.love".into(),
+            ],
+            search: vec!["Roms/PORTS/Games/Balatro".into()],
+            ..Need::default()
+        }],
+        ..Port::default()
+    };
+    let mut roms = Roms::open(&home);
+    let have = needs::check(&card, &p, &mut roms, &mut |_| {});
+    assert_eq!(have, [Have::Missing]);
+    let found = needs::importable(&card, &home, &p, &have, &mut roms);
+    let f = found[0].clone().expect("found where the old port kept it");
+    assert_eq!(f.shown, "Roms/PORTS/Games/Balatro/balatro.EXE");
+    assert_eq!(f.to, "Roms/PORTS/Games/love-mini/games/balatro/Balatro.exe");
+    needs::place(&card, &f).unwrap();
+    assert!(card.join("Roms/PORTS/Games/love-mini/games/balatro/Balatro.exe").exists());
+    assert!(!card.join("Roms/PORTS/Games/Balatro/balatro.EXE").exists());
+    let have = needs::check(&card, &p, &mut roms, &mut |_| {});
+    assert!(matches!(&have[0], Have::Found(_)));
+}

@@ -251,7 +251,7 @@ pub const IMPORT: &str = "import";
 pub struct Placement {
     pub from: PathBuf,
     pub to: String,
-    /// `from` as shown: from import/.
+    /// `from` as shown: from import/ (or where on the card it was found).
     pub shown: String,
 }
 
@@ -285,7 +285,10 @@ pub fn importable(card: &Path, home: &Path, port: &Port, have: &[Have], roms: &m
                 let to = free_name(card, &dir, &rom.file_name()?.to_string_lossy());
                 return Some(Placement { from: rom.clone(), to, shown: shown(&import, rom) });
             }
-            need.check.iter().find_map(|check| place_for(&import, &entries, check))
+            need.check
+                .iter()
+                .find_map(|check| place_for(&import, &entries, check))
+                .or_else(|| elsewhere(card, need))
         })
         .collect();
     // A placement inside another's folder moves with it: only the outer one is kept.
@@ -294,6 +297,27 @@ pub fn importable(card: &Path, home: &Path, port: &Port, have: &[Have], roms: &m
         .into_iter()
         .map(|p| p.filter(|p| !froms.iter().any(|f| f != &p.from && p.from.starts_with(f))))
         .collect()
+}
+
+/// A file a check names, found on the card in a folder the need's `search` gives
+/// (a file check's, not a ROM's): where another port of the same game kept it. Moved
+/// from there to its place.
+fn elsewhere(card: &Path, need: &Need) -> Option<Placement> {
+    if !need.sha1.is_empty() {
+        return None;
+    }
+    for dir in need.search.iter().filter(|d| crate::index::card_path(d) && !d.is_empty()) {
+        let mut files = Vec::new();
+        walk(&card.join(dir), 2, &mut files);
+        for check in &need.check {
+            let name = check.rsplit('/').next().unwrap_or(check);
+            if let Some(f) = files.iter().find(|f| f.file_name().is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case(name))) {
+                let rel = f.strip_prefix(card).ok()?.to_string_lossy().into_owned();
+                return Some(Placement { from: f.clone(), to: check.clone(), shown: rel });
+            }
+        }
+    }
+    None
 }
 
 /// `dir/name` on the card, or `dir/<stem> (2).<ext>`… when another file has that

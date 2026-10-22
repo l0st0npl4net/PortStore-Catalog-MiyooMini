@@ -990,10 +990,35 @@ impl App {
                 if state == State::ByHand {
                     text += " Its folders are on the card already: files of the same name are replaced.";
                 }
+                let first = match self.store.requirements(&self.index, &port) {
+                    Ok(first) => first,
+                    Err(missing) => {
+                        return self.message(
+                            "Not in the catalog",
+                            &format!("{} runs on {missing}, which the catalog does not have.", port.name),
+                        );
+                    }
+                };
                 self.under.push(self.view.clone());
-                self.view = View::Confirm { text, yes: Action::Install(id) };
+                if first.is_empty() {
+                    self.view = View::Confirm { text, yes: Action::Install(id) };
+                } else {
+                    let names: Vec<String> = first.iter().map(|p| format!("{} {}", p.name, p.version)).collect();
+                    let bytes: u64 = first.iter().map(|p| p.file.size).sum();
+                    text += &format!(" It runs on {}: installed first ({} more to download).", names.join(", "), size(bytes));
+                    let mut ids: Vec<String> = first.into_iter().map(|p| p.id).collect();
+                    ids.push(id);
+                    self.view = View::Confirm { text, yes: Action::InstallMany(ids) };
+                }
             }
             Key::X if matches!(state, State::Installed(_) | State::Update(_)) && id != crate::SELF_ID => {
+                let users = self.store.required_by(&self.index, &id);
+                if !users.is_empty() {
+                    return self.message(
+                        "Still needed",
+                        &format!("{} runs {}. Remove them first.", port.name, users.join(", ")),
+                    );
+                }
                 let mut text = format!("Remove {}?", port.name);
                 if !port.keep.is_empty() {
                     text += " Your own files (game data, settings) stay.";
@@ -1102,8 +1127,19 @@ impl App {
         };
         let queue: Vec<Port> = match &action {
             // Port Store itself last: what is left of the queue still runs on the old one.
+            // What a port runs on goes ahead of it (once).
             Action::InstallMany(ids) => {
-                let mut q: Vec<Port> = ids.iter().filter_map(|id| self.port(id).cloned()).collect();
+                let mut q: Vec<Port> = Vec::new();
+                for p in ids.iter().filter_map(|id| self.port(id)) {
+                    for need in self.store.requirements(&self.index, p).unwrap_or_default() {
+                        if !q.iter().any(|x| x.id == need.id) {
+                            q.push(need);
+                        }
+                    }
+                    if !q.iter().any(|x| x.id == p.id) {
+                        q.push(p.clone());
+                    }
+                }
                 q.sort_by_key(|p| p.id == crate::SELF_ID);
                 q
             }
@@ -1180,6 +1216,11 @@ fn job(
                     break;
                 }
                 let _ = tx.send(Msg::Queue(n + 1, queue.len(), port.name.clone()));
+                // what it runs on did not install: neither does it
+                if let Some(need) = port.requires.iter().find(|r| failed.iter().any(|(f, _): &(String, String)| f == *r)) {
+                    failed.push((port.id.clone(), format!("needs {need}, which did not install")));
+                    continue;
+                }
                 match store.install(port, &cancel, &mut |step| {
                     let _ = tx.send(Msg::Step(step));
                 }) {
@@ -2673,6 +2714,25 @@ mod tests {
                 Item::Brew(b) => format!("hb {}", app.brews.entries[*b].title),
             })
             .collect()
+    }
+
+    #[test]
+    fn a_game_on_a_runtime_installs_it_first() {
+        let mut app = app(&[("Game", "", &["action"]), ("Runtime", "", &["app"])]);
+        app.index.ports[0].requires = vec!["runtime".into()];
+        app.details_key(Key::A, "game".into(), 0);
+        match &app.view {
+            View::Confirm { text, yes: Action::InstallMany(ids) } => {
+                assert_eq!(ids, &["runtime", "game"]);
+                assert!(text.contains("runs on Runtime"), "{text}");
+            }
+            other => panic!("{other:?}"),
+        }
+        // a runtime the catalog does not have: said so, nothing installed
+        app.view = View::List;
+        app.index.ports[0].requires = vec!["gone".into()];
+        app.details_key(Key::A, "game".into(), 0);
+        assert!(matches!(&app.view, View::Message { text, .. } if text.contains("gone")));
     }
 
     #[test]

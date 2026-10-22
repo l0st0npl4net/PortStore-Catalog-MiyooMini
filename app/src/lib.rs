@@ -377,6 +377,41 @@ impl Store {
         Ok(rec)
     }
 
+    /// The ports `port` requires that are not on the card yet (or have an update),
+    /// those they require in turn first: what to install before it. Err: one that is
+    /// not in the catalog (its id).
+    pub fn requirements(&self, index: &Index, port: &Port) -> Result<Vec<Port>, String> {
+        fn walk(store: &Store, index: &Index, port: &Port, seen: &mut Vec<String>, out: &mut Vec<Port>) -> Result<(), String> {
+            for id in &port.requires {
+                if seen.contains(id) {
+                    continue;
+                }
+                seen.push(id.clone());
+                let need = index.port(id).ok_or_else(|| id.clone())?;
+                walk(store, index, need, seen, out)?;
+                if matches!(store.state(need), State::Absent | State::Update(_)) {
+                    out.push(need.clone());
+                }
+            }
+            Ok(())
+        }
+        let mut out = Vec::new();
+        walk(self, index, port, &mut vec![port.id.clone()], &mut out)?;
+        Ok(out)
+    }
+
+    /// The installed ports that require `id` (by the catalog), by name.
+    pub fn required_by(&self, index: &Index, id: &str) -> Vec<String> {
+        self.card
+            .all_installed()
+            .iter()
+            .filter(|rec| rec.id != id)
+            .filter_map(|rec| index.port(&rec.id))
+            .filter(|p| p.requires.iter().any(|r| r == id))
+            .map(|p| p.name.clone())
+            .collect()
+    }
+
     pub fn remove(&self, id: &str, port: Option<&Port>) -> io::Result<Installed> {
         if id == SELF_ID {
             return Err(io::Error::other("Port Store does not remove itself: delete App/PortStore on a computer"));

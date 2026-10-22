@@ -21,14 +21,14 @@ import build  # noqa: E402  (index/build.py, next to this file)
 FIELDS = {
     "id", "catalog", "name", "group", "categories", "status", "assets", "porter", "about", "url",
     "image", "notes", "github", "asset", "tag", "prerelease", "strip", "take", "into", "map", "skip",
-    "keep", "needs", "shortcut",
+    "keep", "needs", "shortcut", "requires",
 }
 NEED_FIELDS = {"what", "hint", "check", "sha1", "search", "n64", "title"}
 
 
 TEXT_FIELDS = {"id", "catalog", "name", "group", "status", "assets", "about", "url", "image", "notes",
                "github", "asset", "tag", "strip", "into"}
-LIST_FIELDS = {"categories", "porter", "take", "skip", "keep"}
+LIST_FIELDS = {"categories", "porter", "take", "skip", "keep", "requires"}
 
 
 def card_path(path):
@@ -85,6 +85,9 @@ def problems(recipe, path, ids):
             out.append(f"unknown fields in `needs`: {', '.join(sorted(set(need) - NEED_FIELDS))}")
         if not need.get("what"):
             out.append("each of `needs` says `what`")
+    for req in recipe.get("requires", []) if isinstance(recipe.get("requires", []), list) else []:
+        if not (isinstance(req, str) and re.fullmatch(r"[a-z0-9][a-z0-9-]*", req)):
+            out.append("`requires`: ids of other ports (lower-case letters, digits and dashes)")
     for pair in recipe.get("map", []):
         if not (isinstance(pair, list) and len(pair) == 2 and all(isinstance(x, str) for x in pair)):
             out.append("`map`: [from, to] pairs of texts")

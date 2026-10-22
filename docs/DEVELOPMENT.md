@@ -121,8 +121,10 @@ only secret is the automatic `GITHUB_TOKEN`.
 Some porters publish their games from their own site, with a catalog in the format of
 [Mixtape](https://github.com/snyderman3000/mixtape) (another store for OnionOS): `{"name",
 "ports": [{"name", "version", "url", "sha256", "size", "keep", "categories", "status",
-"assets", "porter", "upstream", "image", "notes"}]}`, each `url` a zip laid out for the card's
-root. A source file names one:
+"assets", "porter", "upstream", "image", "notes", "requires", "needs"}]}`, each `url` a zip laid
+out for the card's root (`requires` and `needs` are Port Store's additions: what it runs on, and
+for a game the user owns what they bring, as in a recipe: `what`, `hint`, `check`, ...). A
+source file names one:
 
 ```json
 { "name": "slop.kitchen", "manifest": "https://slop.kitchen/mixtape/manifest.json", "dev": false }
@@ -184,6 +186,20 @@ Nothing is downloaded or hosted here but the lists. The device takes only entrie
 addresses are on `https://raw.githubusercontent.com/`, whose slug is a plain name and whose
 system it knows.
 
+### Ports on a runtime (`requires`)
+
+A port can run on another port of the catalog: a LÖVE game on
+[love-mini](https://github.com/l0st0npl4net/love-mini), which keeps its games in
+`Roms/PORTS/Games/love-mini/games/<id>/` and starts them with `run.sh <id>`. Such a port
+(recipe or source entry) lists them in `requires`. On the device (`Store::requirements`):
+installing it installs first what it requires that is not on the card or has an update (and
+what that requires, once each; a loop ends); with marked ports or *update all*, a runtime goes
+ahead of the ports that need it, and a port whose runtime fails is not installed. A port that
+installed ports require is not removed until they are (`Store::required_by`). In the index such
+a port's `roots` are its own `Roms/PORTS/Games/<Runtime>/games/<Name>/`, not the runtime's
+folder, and its shortcut's checks of the runtime's files are left out of `needs`. The build
+warns of a port that requires an id the index does not have.
+
 ### `index.json`
 
 `format` (1; Port Store refuses others), `generated` (UTC time; the newest catalog at hand
@@ -202,6 +218,7 @@ is not a plain name), is left out and logged, the rest of the catalog stands. A 
 | `source` | the porter's catalog it comes from (sources only): any other version is an update |
 | `auto` | no recipe: the release goes onto the card as it is laid out (marked `AUTO`) |
 | `needs` | what the user brings: `what`, `hint`, `check`, `sha1`, `search`, `n64`, `title` |
+| `requires` | ids of ports it runs on (a game on love-mini): see "Ports on a runtime" |
 | `install` | `files`, `bytes`, `roots`, `marks` |
 
 New fields must be optional on the device (`#[serde(default)]`), so older Port Stores keep
