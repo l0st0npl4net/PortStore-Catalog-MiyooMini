@@ -4,7 +4,7 @@ name: index
 
 on:
   schedule:
-    - cron: "17 3 * * *"
+    - cron: "17 */6 * * *"
   # Also started by release.yml when a Port Store release is published.
   workflow_dispatch:
   push:

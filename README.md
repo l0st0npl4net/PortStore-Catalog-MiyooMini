@@ -104,7 +104,7 @@ demos, tools and music. Select filters by system or kind, R2 puts the newest add
 - The ROM comes from its database's own repository on GitHub and is checked against the
   list (its git blob id) before it goes onto the card.
 - Removing takes away the ROM and the box art Port Store added; saves stay.
-- The list is built every day with the catalog and downloaded when you first open the tab
+- The list is built every 6 hours with the catalog and downloaded when you first open the tab
   each day (Y downloads it again); a copy comes with Port Store. Pictures are downloaded as
   the list shows them.
 - ROM hacks of commercial games are not listed.
@@ -172,7 +172,7 @@ put the files in place yourself: the page says where (Y checks again).
 
 ## Updates
 
-- The catalog is built again every day from the ports' releases (and from the porters' own
+- The catalog is built again every 6 hours from the ports' releases (and from the porters' own
   catalogs, such as slop.kitchen's), and Port Store downloads it each time it starts. A port with a newer release shows in the **Updates** tab; **Select**
   there updates them all.
 - The number of updates shows under Port Store's name in **Apps** (after Port Store has run

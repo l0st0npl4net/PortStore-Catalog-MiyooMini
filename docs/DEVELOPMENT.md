@@ -8,7 +8,7 @@ test and release it. The [README](../README.md) covers using it and the recipe f
 
 ```
 recipes/*.json ─────────┐
-recipes/sources/*.json ─┴► index/build.py (GitHub Actions, daily) ──► GitHub Pages: index.json + img/
+recipes/sources/*.json ─┴► index/build.py (GitHub Actions, every 6 hours) ──► GitHub Pages: index.json + img/
  (porters' own catalogs)                                                   │
      authors' GitHub releases and sites ◄── downloads ── Port Store on the Mini (app/)
 ```
@@ -54,7 +54,7 @@ Port Store hosts no ports: only the catalog and its pictures are on GitHub Pages
 
 `.github/workflows/index.yml` runs:
 
-- every day at 03:17 UTC (`schedule`), so new releases of the ports reach the devices;
+- every 6 hours, at 00:17, 06:17, 12:17 and 18:17 UTC (`schedule`), so new releases of the ports reach the devices;
 - on a push to `main` that changes `recipes/`, `index/` or the workflow itself;
 - by hand: Actions → index → Run workflow (`workflow_dispatch`);
 - when a Port Store release is published or edited (a file attached later): `release.yml` starts it with
