@@ -18,9 +18,13 @@ Install, update and remove ports right on a Miyoo Mini, Mini Plus, Mini v4 or Mi
 - **A terminal on a picture tube:** green, amber, ice, white or red phosphor (or the classic
   look), scan lines and glow, the tube switching on and off, flicker and tearing as screens
   change.
+- **Dependencies** tab: what ports run on (love-mini), installed with the first port that
+  needs it, updated and seen here, with what needs it.
 - **Games** and **Apps** tabs, a filter by category, pictures, newest first; install several
   ports at once.
-- Games go to their own system, **Games → MiyooPorts**, next to your consoles.
+- Games go to their own system, **Games → MiyooPorts**, next to your consoles (LÖVE games in
+  a folder of their own). OnionOS's own Games → Ports can be hidden (L2): its ports then show in
+  MiyooPorts' Ports folder.
 - **Updates** of the ports, and of Port Store itself, are offered as soon as their authors
   publish them; the number of updates shows under Port Store's name in Apps.
 - Games that need **your own files** (a ROM, the game's data) say what to put where; copy them
@@ -53,7 +57,7 @@ release over it once.
 | Button | |
 |---|---|
 | D-pad | move; Left / Right: a page |
-| L1 / R1 | tabs: Games, Apps, Homebrew, Installed, Updates, More |
+| L1 / R1 | tabs: Games, Apps, Homebrew, Dependencies, Installed, Updates, More |
 | A | open a port; on its page: install, update or reinstall |
 | X | list: mark a port (Start installs the marked ones); page: remove |
 | Start | list: install the marked ports, one after another; page: move your files found in `import` into place |

@@ -1630,3 +1630,50 @@ fn a_port_with_a_folder_has_its_launchers_in_that_folder_of_miyooports() {
     assert!(!card.join("Roms/MiyooPorts/LÖVE").exists());
     assert!(card.join("Roms/MiyooPorts/Imgs").exists() || !card.join("Roms/MiyooPorts").exists());
 }
+
+#[test]
+fn onionos_ports_hidden_shows_its_ports_in_miyooports_and_comes_back() {
+    use portstore::miyooports;
+    let card = temp("hide-ports");
+    let put = |p: &str, text: &str| {
+        let f = card.join(p);
+        fs::create_dir_all(f.parent().unwrap()).unwrap();
+        fs::write(f, text).unwrap();
+    };
+    put("Roms/PORTS/Shortcuts/~Import ports.miyoocmd", "#!/bin/sh");
+    put("Roms/PORTS/Shortcuts/Action/Cave Story.port", "GameDir=\"CaveStory\"");
+    put("Roms/PORTS/Shortcuts/Puzzle/Foo.notfound", "GameDir=\"Foo\"");
+    put("Roms/PORTS/Shortcuts/Puzzle/Bar.port", "GameDir=\"Bar\"");
+    put("Roms/PORTS/Shortcuts/Puzzle/Bar.notfound", "GameDir=\"Bar\"");
+    put("Roms/PORTS/Imgs/Cave Story.png", "PNG");
+    put("Roms/MiyooPorts/Imgs/Bar.png", "mine");
+    let before = files_under(&card.join("Roms/PORTS/Shortcuts"));
+
+    assert!(!miyooports::ports_hidden(&card));
+    miyooports::hide_ports(&card).unwrap();
+    assert!(miyooports::ports_hidden(&card));
+    assert!(files_under(&card.join("Roms/PORTS/Shortcuts")).is_empty(), "Ports has nothing to list");
+    let launchers = files_under(&card.join("Roms/MiyooPorts/Ports"));
+    assert_eq!(launchers, ["Bar.sh", "Cave Story.sh", "Foo.sh"], "no ~Import ports, a game once");
+    let cave = fs::read_to_string(card.join("Roms/MiyooPorts/Ports/Cave Story.sh")).unwrap();
+    assert!(cave.contains("Roms/MiyooPorts/.ports/own/Action/Cave Story.port"), "{cave}");
+    assert_eq!(fs::read_to_string(card.join("Roms/MiyooPorts/Imgs/Cave Story.png")).unwrap(), "PNG");
+    assert_eq!(fs::read_to_string(card.join("Roms/MiyooPorts/Imgs/Bar.png")).unwrap(), "mine", "a picture there stays");
+
+    // a port put into Ports later is taken in
+    put("Roms/PORTS/Shortcuts/Action/New.port", "GameDir=\"New\"");
+    assert!(miyooports::adopt_ports(&card).unwrap());
+    assert!(card.join("Roms/MiyooPorts/Ports/New.sh").exists());
+    assert!(!miyooports::adopt_ports(&card).unwrap(), "nothing new");
+
+    // shown again: all back as it was, the launchers and the pictures made gone
+    miyooports::show_ports(&card).unwrap();
+    assert!(!miyooports::ports_hidden(&card));
+    let mut after = before.clone();
+    after.push("Action/New.port".into());
+    after.sort();
+    assert_eq!(files_under(&card.join("Roms/PORTS/Shortcuts")), after);
+    assert!(!card.join("Roms/MiyooPorts/Ports").exists());
+    assert!(!card.join("Roms/MiyooPorts/Imgs/Cave Story.png").exists());
+    assert_eq!(fs::read_to_string(card.join("Roms/MiyooPorts/Imgs/Bar.png")).unwrap(), "mine");
+}

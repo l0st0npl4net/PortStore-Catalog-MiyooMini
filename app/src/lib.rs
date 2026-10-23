@@ -564,6 +564,10 @@ impl Store {
     /// Put right what an earlier Port Store (or catalog) left otherwise on the card.
     pub fn repair(&self, index: &Index) {
         let mut changed = self.card.repair_ports();
+        // Games > Ports hidden: what came into it since goes to MiyooPorts too
+        if let Err(e) = miyooports::adopt_ports(&self.card.root) {
+            eprintln!("portstore: Ports: {e}");
+        }
         for port in &index.ports {
             match self.card.conform(port) {
                 Ok(true) => changed = true,

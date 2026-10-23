@@ -2,6 +2,7 @@
 //! portstore list       the catalog and what is installed
 //! portstore install ID / remove ID / needs ID / refresh
 //! portstore homebrew [refresh | install SLUG | remove SLUG]   Homebrew Hub's list
+//! portstore ports [hide | show | adopt]   OnionOS's Games > Ports hidden (its ports in MiyooPorts)
 //! portstore shots DIR [ID...]   screens as PNGs
 //!
 //! PORTSTORE_CARD is the SD card (/mnt/SDCARD), PORTSTORE_HOME Port Store's folder
@@ -90,6 +91,19 @@ fn main() -> ExitCode {
             }
             Ok(())
         }),
+        Some("ports") => {
+            // OnionOS's Games > Ports: hidden (its ports in MiyooPorts), shown, or what
+            // came into it since taken in (launch.sh, after ~Import ports)
+            let root = &store.card.root;
+            let done = match args.get(1).map(String::as_str) {
+                Some("hide") => portstore::miyooports::hide_ports(root).map(|n| format!("Ports hidden: {n} files in MiyooPorts")),
+                Some("show") => portstore::miyooports::show_ports(root).map(|n| format!("Ports shown: {n} files back")),
+                Some("adopt") => portstore::miyooports::adopt_ports(root)
+                    .map(|c| format!("Ports: {}", if c { "taken in" } else { "nothing new" })),
+                _ => Err(std::io::Error::other("ports [hide | show | adopt]")),
+            };
+            done.map(|m| println!("{m}")).map_err(|e| e.to_string())
+        }
         Some("refresh") => store.refresh(&cancel).map(|index| {
             println!("catalog {}: {} ports", index.generated, index.ports.len());
         }),

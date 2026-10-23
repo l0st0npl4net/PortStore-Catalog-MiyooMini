@@ -199,7 +199,10 @@ ahead of the ports that need it, and a port whose runtime fails is not installed
 installed ports require is not removed until they are (`Store::required_by`). In the index such
 a port's `roots` are its own `Roms/PORTS/Games/<Runtime>/games/<Name>/`, not the runtime's
 folder, and its shortcut's checks of the runtime's files are left out of `needs`. The build
-warns of a port that requires an id the index does not have.
+warns of a port that requires an id the index does not have. The app lists such ports (those another
+requires, and those of category `runtime`) in a tab of their own, **Dependencies**, not among
+Games or Apps (`Index::dependencies`); a port's page says what it runs on (`RUNS ON`, with its
+state) and a dependency's how many ports need it (`NEEDED BY`).
 
 ### `index.json`
 
@@ -444,6 +447,20 @@ Apps (category `app`) get no launcher and stay in Apps, unless released as a sho
 Ports (hidden like a game's): then MiyooPorts is the only place they start from. On start, `Store::repair` runs `conform`
 for every installed port: games of Port Store 0.3 move from `Roms/PORTS/Shortcuts` and Apps into
 MiyooPorts, launchers are made or brought up to date (written only when they differ).
+
+#### OnionOS's own Ports, hidden
+
+Games > Ports lists `Roms/PORTS/Shortcuts`, which always has `~Import ports.miyoocmd`. L2's
+**ONIONOS PORTS** setting (or `portstore ports hide|show`) hides it: everything in
+`Roms/PORTS/Shortcuts` (ports put on the card by hand or by Package Manager, ~Import ports)
+moves to `Roms/MiyooPorts/.ports/own/`, and each port there (a `.port`, else its `.notfound`)
+gets a launcher in MiyooPorts' `Ports` folder, with the picture Ports had for it (the pictures
+it copies are listed in `.ports/own.made`). Ports' folder empty, MainUI leaves it out of Games.
+While hidden, what comes into `Roms/PORTS/Shortcuts` is taken in on Port Store's start and after
+~Import ports (`launch.sh`: `portstore ports adopt`). Shown again, all goes back and the
+launchers and copied pictures go. Ports Collection itself stays: MiyooPorts starts ports through
+its `launch.sh`. The setting is the card's state, not settings.json's: hidden while
+`.ports/own/` is there (`miyooports::ports_hidden`).
 
 ### Updates and Port Store's own updates
 

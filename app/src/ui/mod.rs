@@ -65,16 +65,19 @@ const AWAKE: Duration = Duration::from_secs(40);
 pub enum Tab {
     Games,
     Apps,
+    /// What ports run on (love-mini): installed with them, updated here.
+    Deps,
     Homebrew,
     Installed,
     Updates,
     More,
 }
 
-const TABS: [(Tab, &str); 6] = [
+const TABS: [(Tab, &str); 7] = [
     (Tab::Games, "GAMES"),
     (Tab::Apps, "APPS"),
     (Tab::Homebrew, "HOMEBREW"),
+    (Tab::Deps, "DEPENDENCIES"),
     (Tab::Installed, "INSTALLED"),
     (Tab::Updates, "UPDATES"),
     (Tab::More, "MORE"),
@@ -124,7 +127,7 @@ impl Choice {
 }
 
 /// The rows of the system's window.
-const SYSTEM: [&str; 5] = ["THEME", "EFFECTS", "PICTURES", "DEV BUILDS", "PORT STORE IN GAMES"];
+const SYSTEM: [&str; 6] = ["THEME", "EFFECTS", "PICTURES", "DEV BUILDS", "PORT STORE IN GAMES", "ONIONOS PORTS"];
 
 #[derive(Clone, Debug)]
 enum Action {
@@ -257,10 +260,10 @@ pub struct App {
     free: Option<u64>,
     tab: Tab,
     /// Per tab: ports of one category only (Games and Apps; Select's window).
-    filter: [Option<String>; 6],
+    filter: [Option<String>; TABS.len()],
     /// Per tab: the row picked and the first row on show, by place in `items()`.
-    pick: [usize; 6],
-    top: [usize; 6],
+    pick: [usize; TABS.len()],
+    top: [usize; TABS.len()],
     /// Homebrew Hub's list, the state of each entry, and whether it is being
     /// downloaded (asked for once a session, when the tab is first shown).
     brews: Homebrew,
@@ -272,6 +275,8 @@ pub struct App {
     seen: HashMap<String, String>,
     /// Port Store's own entry in Games → MiyooPorts.
     in_games: bool,
+    /// Games > Ports hidden, its ports in MiyooPorts' Ports folder.
+    ports_hidden: bool,
     pictures: Pictures,
     /// Ports marked (X) for installing together (Start).
     marked: std::collections::BTreeSet<String>,
@@ -341,8 +346,8 @@ impl App {
             offer_pending: false,
             needs_gen: HashMap::new(),
             scroll_max: 0,
-            pick: [0; 6],
-            top: [0; 6],
+            pick: [0; TABS.len()],
+            top: [0; TABS.len()],
             brews: Homebrew::default(),
             brew_states: HashMap::new(),
             brews_loading: false,
@@ -350,6 +355,7 @@ impl App {
             arrivals: Vec::new(),
             seen: HashMap::new(),
             in_games: false,
+            ports_hidden: false,
             view: View::List,
             under: Vec::new(),
             jobs: channel(),
@@ -368,6 +374,7 @@ impl App {
         };
         app.brews = app.store.load_homebrew();
         app.in_games = crate::miyooports::self_entry(&app.store.card.root);
+        app.ports_hidden = crate::miyooports::ports_hidden(&app.store.card.root);
         app.look_for_arrivals();
         app.recount();
         app
@@ -444,11 +451,15 @@ impl App {
     /// when asked for.
     fn of_tab(&self, tab: Tab) -> impl Iterator<Item = (usize, &Port)> + '_ {
         let dev = self.look.dev;
+        // what ports run on has a tab of its own, not among games or apps
+        let deps = self.index.dependencies();
         self.index.ports.iter().enumerate().filter(move |(_, p)| {
+            let dep = deps.contains(p.id.as_str());
             (dev || !p.dev)
                 && match tab {
-                    Tab::Games => !p.is_app(),
-                    Tab::Apps => p.is_app(),
+                    Tab::Games => !p.is_app() && !dep,
+                    Tab::Apps => p.is_app() && !dep,
+                    Tab::Deps => dep,
                     _ => false,
                 }
         })
@@ -464,6 +475,7 @@ impl App {
                 .of_tab(self.tab)
                 .filter(|(_, p)| filter.as_ref().is_none_or(|g| p.categories.contains(g)))
                 .collect(),
+            Tab::Deps => self.of_tab(Tab::Deps).collect(),
             Tab::Installed => self
                 .index
                 .ports
@@ -934,6 +946,24 @@ impl App {
                 self.look.pictures = theme::PICTURES[turn(theme::PICTURES.len(), at)].0;
             }
             3 => self.look.dev = !self.look.dev,
+            5 => {
+                // Not a look either: Games > Ports hidden (its ports in MiyooPorts) or
+                // shown, at once.
+                let root = &self.store.card.root;
+                let hidden = crate::miyooports::ports_hidden(root);
+                let done = match hidden {
+                    true => crate::miyooports::show_ports(root),
+                    false => crate::miyooports::hide_ports(root),
+                };
+                match done {
+                    Ok(_) => self.ports_hidden = !hidden,
+                    Err(e) => {
+                        self.view = View::List;
+                        self.message("Not changed", &e.to_string());
+                    }
+                }
+                return;
+            }
             _ => {
                 // Not a look: Port Store's entry in MiyooPorts is put on the card or
                 // taken off it at once.
@@ -1659,6 +1689,7 @@ impl App {
         if items.is_empty() {
             let text = match self.tab {
                 Tab::Installed => "NOTHING INSTALLED WITH PORT STORE YET.",
+                Tab::Deps => "NOTHING IN THE CATALOG RUNS ON ANOTHER PORT.",
                 Tab::Updates => "EVERYTHING INSTALLED IS UP TO DATE.",
                 Tab::More => "NOTHING MORE IN THE CATALOG.",
                 Tab::Apps if filter.is_some() => "NO APPS OF THIS KIND.",
@@ -2013,6 +2044,22 @@ impl App {
         if port.auto {
             rows.push(("RECIPE", "NONE: AS RELEASED".into()));
         }
+        // a game on a runtime: whether that is on the card; a runtime: what runs on it
+        for need in &port.requires {
+            let name = self.port(need).map_or(need.clone(), |d| d.name.clone());
+            let on = match self.state(need) {
+                State::Installed(_) => "INSTALLED",
+                State::Update(_) => "UPDATE",
+                State::ByHand => "ON CARD",
+                State::Absent => "COMES WITH IT",
+            };
+            rows.push(("RUNS ON", format!("{name} ({on})")));
+        }
+        let users = self.index.required_by(&port.id);
+        if !users.is_empty() {
+            let installed = users.iter().filter(|u| matches!(self.state(&u.id), State::Installed(_) | State::Update(_))).count();
+            rows.push(("NEEDED BY", format!("{} IN CATALOG, {installed} INSTALLED", users.len())));
+        }
         if self.is_new(&port.id) {
             rows.push(("IN CATALOG", format!("NEW, SINCE {}", self.seen.get(&port.id).cloned().unwrap_or_default())));
         }
@@ -2247,6 +2294,7 @@ impl App {
             self.look.pictures_name().to_string(),
             if self.look.dev { "SHOWN" } else { "HIDDEN" }.to_string(),
             if self.in_games { "ON" } else { "OFF" }.to_string(),
+            if self.ports_hidden { "IN MIYOOPORTS" } else { "SHOWN" }.to_string(),
         ];
         let mut ty = y + BAR + 8;
         for (n, (label, value)) in SYSTEM.iter().zip(values).enumerate() {
@@ -2714,6 +2762,18 @@ mod tests {
                 Item::Brew(b) => format!("hb {}", app.brews.entries[*b].title),
             })
             .collect()
+    }
+
+    #[test]
+    fn what_ports_run_on_has_a_tab_of_its_own() {
+        let mut app = app(&[("Game", "", &["action"]), ("Tool", "", &["app"]), ("love-mini", "", &["app"]), ("Rt", "", &["runtime"])]);
+        app.index.ports[0].requires = vec!["love-mini".into()];
+        app.tab = Tab::Games;
+        assert_eq!(names(&app), ["Game"]);
+        app.tab = Tab::Apps;
+        assert_eq!(names(&app), ["Tool"], "a runtime is not an app");
+        app.tab = Tab::Deps;
+        assert_eq!(names(&app), ["love-mini", "Rt"], "required by a port, or a runtime by category");
     }
 
     #[test]

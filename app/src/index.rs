@@ -226,6 +226,19 @@ impl Index {
     pub fn port(&self, id: &str) -> Option<&Port> {
         self.ports.iter().find(|p| p.id == id)
     }
+
+    /// The ports others run on: a runtime, or one another port of the catalog requires.
+    pub fn dependencies(&self) -> std::collections::BTreeSet<&str> {
+        let mut out: std::collections::BTreeSet<&str> =
+            self.ports.iter().flat_map(|p| p.requires.iter().map(String::as_str)).collect();
+        out.extend(self.ports.iter().filter(|p| p.is_runtime()).map(|p| p.id.as_str()));
+        out
+    }
+
+    /// The ports of the catalog that require `id`.
+    pub fn required_by(&self, id: &str) -> Vec<&Port> {
+        self.ports.iter().filter(|p| p.requires.iter().any(|r| r == id)).collect()
+    }
 }
 
 /// A path from the card's root (or a prefix of one), as the catalog gives it: relative,
@@ -295,6 +308,11 @@ impl Port {
     /// Apps (catalog category "app"), as against games.
     pub fn is_app(&self) -> bool {
         self.categories.iter().any(|c| c == "app")
+    }
+
+    /// A runtime (catalog category "runtime"): something ports run on, not played.
+    pub fn is_runtime(&self) -> bool {
+        self.categories.iter().any(|c| c == "runtime")
     }
 
     /// Whether `path` (from the card's root) is the user's.

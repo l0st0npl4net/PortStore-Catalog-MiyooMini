@@ -12,4 +12,6 @@ if [ -f cache/import ]; then
     rm -f cache/import
     [ -f /mnt/SDCARD/Emu/PORTS/import.sh ] && sh /mnt/SDCARD/Emu/PORTS/import.sh
 fi
+# Games > Ports hidden: what ~Import ports (or anything else) put there goes to MiyooPorts
+[ -d /mnt/SDCARD/Roms/MiyooPorts/.ports/own ] && ./portstore ports adopt >> cache/portstore.log 2>&1
 sync

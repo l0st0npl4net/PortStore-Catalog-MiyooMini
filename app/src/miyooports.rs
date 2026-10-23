@@ -306,3 +306,156 @@ pub fn reset_list(root: &Path, dir: &str) {
         let _ = fs::remove_file(dir.join(format!("{name}{suffix}")));
     }
 }
+
+// ---------------------------------------------------------------- OnionOS's own Ports
+// Games > Ports lists Roms/PORTS/Shortcuts (Ports Collection's own system). Hidden,
+// everything there (the ports put on the card by hand or by Package Manager, ~Import
+// ports) moves to OWN, and each port gets a launcher in MiyooPorts' OWN_FOLDER: Ports,
+// its folder empty, leaves Games. Shown again, all goes back. Port Store's own ports are
+// in MiyooPorts either way; Ports Collection stays (MiyooPorts starts ports through it).
+
+/// Where Ports' shortcuts are kept while Ports is hidden; there, Ports is hidden.
+pub const OWN: &str = "Roms/MiyooPorts/.ports/own";
+/// MiyooPorts' folder of their launchers.
+pub const OWN_FOLDER: &str = "Ports";
+const PORTS_LIST: &str = "Roms/PORTS/Shortcuts";
+/// The pictures OWN's launchers got in Imgs/ (taken away with them).
+const OWN_MADE: &str = "Roms/MiyooPorts/.ports/own.made";
+/// The Ports entry that imports ports: pointless while Ports is hidden.
+const IMPORT_ENTRY: &str = "~Import ports.miyoocmd";
+
+pub fn ports_hidden(root: &Path) -> bool {
+    root.join(OWN).is_dir()
+}
+
+/// Everything under `from` moved under `to` (folders merged, a file there replaced).
+fn move_tree(from: &Path, to: &Path) -> io::Result<usize> {
+    let mut n = 0;
+    let Ok(entries) = fs::read_dir(from) else { return Ok(0) };
+    for e in entries.flatten() {
+        let (src, dest) = (e.path(), to.join(e.file_name()));
+        if src.is_dir() {
+            fs::create_dir_all(&dest)?;
+            n += move_tree(&src, &dest)?;
+            let _ = fs::remove_dir(&src);
+        } else {
+            fs::create_dir_all(to)?;
+            crate::install::move_file(&src, &dest)?;
+            n += 1;
+        }
+    }
+    Ok(n)
+}
+
+/// Hide Games > Ports: its shortcuts into OWN, launchers for them in MiyooPorts.
+pub fn hide_ports(root: &Path) -> io::Result<usize> {
+    fs::create_dir_all(root.join(OWN))?;
+    let n = move_tree(&root.join(PORTS_LIST), &root.join(OWN))?;
+    own_launchers(root)?;
+    reset_list(root, PORTS_LIST);
+    Ok(n)
+}
+
+/// Show Games > Ports again: its shortcuts back, their launchers gone.
+pub fn show_ports(root: &Path) -> io::Result<usize> {
+    if !ports_hidden(root) {
+        return Ok(0);
+    }
+    fs::create_dir_all(root.join(PORTS_LIST))?;
+    let n = move_tree(&root.join(OWN), &root.join(PORTS_LIST))?;
+    drop_own_launchers(root);
+    let _ = fs::remove_dir_all(root.join(OWN));
+    reset_list(root, PORTS_LIST);
+    reset_list(root, DIR);
+    Ok(n)
+}
+
+/// While Ports is hidden: what came into it since (Package Manager, ~Import ports, a
+/// port copied by hand) joins the others. Whether anything did.
+pub fn adopt_ports(root: &Path) -> io::Result<bool> {
+    if !ports_hidden(root) {
+        return Ok(false);
+    }
+    let n = move_tree(&root.join(PORTS_LIST), &root.join(OWN))?;
+    if n > 0 {
+        reset_list(root, PORTS_LIST);
+    }
+    // launchers again either way: a shortcut may have been removed by hand
+    own_launchers(root)?;
+    Ok(n > 0)
+}
+
+fn drop_own_launchers(root: &Path) {
+    let _ = fs::remove_dir_all(root.join(DIR).join(OWN_FOLDER));
+    if let Ok(made) = fs::read_to_string(root.join(OWN_MADE)) {
+        for f in made.lines().filter(|f| crate::index::card_path(f) && f.starts_with(&format!("{DIR}/Imgs/"))) {
+            let _ = fs::remove_file(root.join(f));
+        }
+    }
+    let _ = fs::remove_file(root.join(OWN_MADE));
+}
+
+/// A launcher in MiyooPorts' Ports folder for every port of OWN (a .port, else its
+/// .notfound: MiyooPorts shows a game whose files are missing, and says so when it
+/// starts), with the picture Ports had for it.
+fn own_launchers(root: &Path) -> io::Result<()> {
+    drop_own_launchers(root);
+    let mut found = Vec::new();
+    fn walk(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(entries) = fs::read_dir(dir) else { return };
+        let mut entries: Vec<_> = entries.flatten().map(|e| e.path()).collect();
+        entries.sort();
+        for p in entries {
+            if p.is_dir() {
+                walk(&p, out);
+            } else {
+                out.push(p);
+            }
+        }
+    }
+    walk(&root.join(OWN), &mut found);
+    let mut made: Vec<String> = Vec::new();
+    let mut names: Vec<String> = Vec::new();
+    for path in &found {
+        let file = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        let ext = path.extension().unwrap_or_default().to_string_lossy().to_ascii_lowercase();
+        let wanted = match ext.as_str() {
+            "port" | "miyoocmd" => file != IMPORT_ENTRY,
+            // a .notfound only when there is no .port of its name
+            "notfound" => !path.with_extension("port").exists(),
+            _ => false,
+        };
+        if !wanted {
+            continue;
+        }
+        let stem = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+        let mut name = file_name(&stem);
+        if name.is_empty() {
+            continue;
+        }
+        while names.contains(&name) {
+            name = format!("{name} (2)");
+        }
+        names.push(name.clone());
+        let rel = path.strip_prefix(root).map_err(io::Error::other)?.to_string_lossy().into_owned();
+        let port = Port { id: "ports".into(), name: name.clone(), version: "OnionOS".into(), ..Port::default() };
+        let launcher = root.join(DIR).join(OWN_FOLDER).join(format!("{name}.sh"));
+        fs::create_dir_all(launcher.parent().unwrap())?;
+        fs::write(&launcher, script(&port, &name, &Start::Shortcut(rel)))?;
+        // Ports' picture of it, by the shortcut's name; one already there is not touched
+        let img = format!("{DIR}/Imgs/{name}.png");
+        let ports_img = root.join(format!("Roms/PORTS/Imgs/{stem}.png"));
+        if !root.join(&img).exists() && ports_img.is_file() {
+            fs::create_dir_all(root.join(DIR).join("Imgs"))?;
+            fs::copy(&ports_img, root.join(&img))?;
+            made.push(img);
+        }
+    }
+    if !names.is_empty() {
+        ensure_system(root)?;
+    }
+    fs::write(root.join(OWN_MADE), made.join("\n"))?;
+    reset_list(root, DIR);
+    reset_list(root, &format!("{DIR}/{OWN_FOLDER}"));
+    Ok(())
+}
